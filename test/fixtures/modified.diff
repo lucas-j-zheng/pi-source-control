@@ -1,0 +1,11 @@
+diff --git a/src/api/session.ts b/src/api/session.ts
+index 1111111..2222222 100644
+--- a/src/api/session.ts
++++ b/src/api/session.ts
+@@ -10,4 +10,5 @@ export function issueSession() {
+ const userId = getUserId();
+-const oldToken = issueToken(userId);
++const token = issueToken(userId);
+ return token;
++logSession(token);
+ }

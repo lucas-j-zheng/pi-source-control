@@ -1,0 +1,9 @@
+diff --git a/last-line.txt b/last-line.txt
+index 7777777..8888888 100644
+--- a/last-line.txt
++++ b/last-line.txt
+@@ -1 +1 @@
+-before
+\ No newline at end of file
++after
+\ No newline at end of file

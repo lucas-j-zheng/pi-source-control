@@ -1,0 +1,20 @@
+diff --git a/README.md b/README.md
+index 1111111..2222222 100644
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,2 @@
+ # Project
+-Old description
++New description
+diff --git a/src/api/session.ts b/src/api/session.ts
+index 3333333..4444444 100644
+--- a/src/api/session.ts
++++ b/src/api/session.ts
+@@ -2,2 +2,2 @@ import { token } from "./token.ts";
+-const enabled = false;
++const enabled = true;
+ export { enabled };
+@@ -20,2 +20,3 @@ export function session() {
+ start();
++audit();
+ finish();
