@@ -46,17 +46,31 @@ function sourceText(item: SourceListItem, selected: boolean): string {
   const marker = selected ? ">" : " ";
   if (item.kind === "working") return `${marker} W ${item.label}`;
   if (item.kind === "staged") return `${marker} S ${item.label}`;
+  if (item.kind === "range") return `${marker} R ${item.label}`;
   return `${marker} ● ${item.shortOid} ${item.subject}`;
 }
 
-export function renderSourceList(
-  input: SourceRowInput,
-  width: number,
-  styler: Styler,
-): RenderedRows {
-  const workspace = input.items.filter((item) => item.kind !== "commit");
+function sourceRows(input: SourceRowInput): SourceRenderRow[] {
+  const [onlyItem] = input.items;
+  if (
+    input.items.length === 1 &&
+    onlyItem !== undefined &&
+    (onlyItem.kind === "commit" || onlyItem.kind === "range")
+  ) {
+    return [
+      {
+        text: sourceText(onlyItem, onlyItem.id === input.selectedId),
+        id: onlyItem.id,
+        selected: onlyItem.id === input.selectedId,
+      },
+    ];
+  }
+
+  const workspace = input.items.filter(
+    (item) => item.kind === "working" || item.kind === "staged",
+  );
   const commits = input.items.filter((item) => item.kind === "commit");
-  const rows: SourceRenderRow[] = [
+  return [
     { text: "WORKSPACE", heading: true },
     ...workspace.map((item) => ({
       text: sourceText(item, item.id === input.selectedId),
@@ -71,6 +85,14 @@ export function renderSourceList(
       selected: item.id === input.selectedId,
     })),
   ];
+}
+
+export function renderSourceList(
+  input: SourceRowInput,
+  width: number,
+  styler: Styler,
+): RenderedRows {
+  const rows = sourceRows(input);
 
   const start = Math.max(0, input.scrollOffset);
   const visibleRows = rows.slice(start, start + Math.max(0, input.maxRows));

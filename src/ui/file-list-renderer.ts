@@ -13,6 +13,7 @@ export interface FileRowInput {
   scrollOffset: number;
   maxRows: number;
   title: string;
+  emptyMessage?: string;
 }
 
 interface FileRenderRow {
@@ -52,7 +53,7 @@ export function renderFileList(
   const rows: FileRenderRow[] = [
     { text: title, title: true },
     ...(input.files.length === 0
-      ? [{ text: "No changes", empty: true }]
+      ? [{ text: input.emptyMessage ?? "No changes", empty: true }]
       : input.files.map((file) => ({
           text: fileRowText(file, input, width),
           id: file.id,

@@ -3,6 +3,7 @@
 export type SourceListItem =
   | { kind: "working"; id: "working"; label: "Working Tree" }
   | { kind: "staged"; id: "staged"; label: "Staged Changes" }
+  | { kind: "range"; id: "range"; label: string }
   | {
       kind: "commit";
       id: string; // `commit:${commitOid}`
