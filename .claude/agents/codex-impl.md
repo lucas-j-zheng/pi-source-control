@@ -13,7 +13,7 @@ Steps:
 1. Run Codex on the spec (substitute the real path for `<spec>`):
 
    ```bash
-   codex exec --sandbox workspace-write --full-auto --output-last-message /tmp/codex.md "Read specs/00-architecture.md if it exists. Then implement exactly what's in <spec>. Run the tests. Report what you changed."
+   codex exec -C "$(pwd)" --skip-git-repo-check --sandbox workspace-write --output-last-message /tmp/codex.md "Read specs/00-architecture.md if it exists. Then implement exactly what's in <spec>. Run the tests. Report what you changed."
    ```
 
 2. Read `/tmp/codex.md` (Codex's final report).
