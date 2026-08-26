@@ -56,6 +56,13 @@ Bare `/diff` starts on the Working Tree source. Direct commit and range forms ar
 | `g` | Refresh Git status, recent commits, and diffs |
 | `?` | Toggle a help overlay or expanded keybinding footer |
 
+### Mouse
+
+Mouse-wheel scrolling works when Pi uses its experimental fullscreen TUI. Enable
+it with `/settings` or start Pi with `pi --tui-mode fullscreen`; the pane under
+the pointer scrolls. Clicks are not supported, and regular mode remains
+keyboard-only.
+
 ## Layouts
 
 - Wide terminals are 130 columns or wider.
@@ -92,7 +99,7 @@ The extension makes no network or model calls. It does not write review state, c
 - Character-level/intraline highlighting.
 - Search within diffs.
 - Drag selection and advanced mouse gestures.
-- No mouse support: Pi exposes no pointer contract.
+- Mouse clicks are not supported; wheel scrolling is fullscreen-only.
 - Non-Git source control systems.
 - Creating commits or performing branch, push, pull, reset, checkout, or merge operations.
 - Combined merge-commit diffs or an in-view merge-parent chooser; merge commits default to parent 1 and disclose that choice.

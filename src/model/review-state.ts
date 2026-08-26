@@ -42,6 +42,11 @@ export type UiAction =
   | { type: "select-source"; sourceId: string }
   | { type: "select-file"; fileId: string }
   | { type: "focus-diff" }
+  | {
+      type: "set-scroll";
+      pane: "sources" | "files" | "diff";
+      offset: number;
+    }
   | { type: "set-notice"; notice?: string };
 
 export interface ReviewEnv {
@@ -439,6 +444,32 @@ export function reduce(
       state.notice === action.notice
         ? state
         : { ...state, notice: action.notice };
+    return finish(state, next);
+  }
+
+  if (action.type === "set-scroll") {
+    const offset = Number.isFinite(action.offset)
+      ? Math.max(0, Math.trunc(action.offset))
+      : 0;
+    let next = clearNotice(state);
+    if (action.pane === "sources") {
+      if (next.sourceScrollOffset !== offset) {
+        next = { ...next, sourceScrollOffset: offset };
+      }
+    } else if (action.pane === "files") {
+      if (next.fileScrollOffset !== offset) {
+        next = { ...next, fileScrollOffset: offset };
+      }
+    } else if (next.selectedFileId !== undefined) {
+      const verticalOffsetByFile = withMapValue(
+        next.verticalOffsetByFile,
+        next.selectedFileId,
+        offset,
+      );
+      if (verticalOffsetByFile !== undefined) {
+        next = { ...next, verticalOffsetByFile };
+      }
+    }
     return finish(state, next);
   }
 
