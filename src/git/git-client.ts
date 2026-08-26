@@ -164,8 +164,11 @@ export async function runOrThrow(
   runner: GitRunner,
   args: string[],
   code: GitErrorCode = "git-failed",
+  options?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<string> {
-  const result = await runner.run(args);
+  const result = options === undefined
+    ? await runner.run(args)
+    : await runner.run(args, options);
   if (result.code !== 0) {
     const firstStderrLine = result.stderr.trim().split(/\r?\n/, 1)[0];
     throw new GitReviewError(
