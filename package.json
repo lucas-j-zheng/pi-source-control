@@ -4,6 +4,15 @@
   "description": "Read-only Source Control diff reviewer for the Pi coding agent (/diff)",
   "type": "module",
   "private": true,
+  "license": "MIT",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "keywords": [
     "pi-package"
   ],
