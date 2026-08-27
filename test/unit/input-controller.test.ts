@@ -49,4 +49,37 @@ describe("input controller", () => {
   it("unknown keys map to undefined", () => {
     expect(actionForKey("x", state, layout)).toBeUndefined();
   });
+
+  it("shift+j and shift+k map to five-line moves", () => {
+    expect(actionForKey("J", state, layout)).toEqual({
+      type: "move",
+      delta: 5,
+    });
+    expect(actionForKey("K", state, layout)).toEqual({
+      type: "move",
+      delta: -5,
+    });
+  });
+
+  it("ctrl+d and ctrl+u map to half-page actions", () => {
+    expect(actionForKey("\u0004", state, layout)).toEqual({
+      type: "half-page",
+      delta: 1,
+    });
+    expect(actionForKey("\u0015", state, layout)).toEqual({
+      type: "half-page",
+      delta: -1,
+    });
+  });
+
+  it("lowercase j and k still move one line", () => {
+    expect(actionForKey("j", state, layout)).toEqual({
+      type: "move",
+      delta: 1,
+    });
+    expect(actionForKey("k", state, layout)).toEqual({
+      type: "move",
+      delta: -1,
+    });
+  });
 });

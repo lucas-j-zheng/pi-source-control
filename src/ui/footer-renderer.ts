@@ -14,6 +14,8 @@ export interface FooterInput {
 const HELP_LINES = [
   "↑ / ↓  Move selection or scroll the focused pane",
   "j / k  Vim-style equivalent of down/up",
+  "J / K  Move 5 lines",
+  "Ctrl+D / Ctrl+U  Half page",
   "Tab  Move focus to the next pane",
   "Shift+Tab  Move focus to the previous pane",
   "Enter  Open the selected item or move into the diff",

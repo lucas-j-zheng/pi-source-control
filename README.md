@@ -42,6 +42,8 @@ Bare `/diff` starts on the Working Tree source. Direct commit and range forms ar
 |---|---|
 | `↑` / `↓` | Move selection or scroll the focused pane |
 | `j` / `k` | Vim-style equivalent of down/up |
+| `J` / `K` | Move 5 lines |
+| `Ctrl+D` / `Ctrl+U` | Half page |
 | `Tab` | Move focus among source list, file list, and diff pane |
 | `Shift+Tab` | Move focus in the opposite direction |
 | `Enter` | From sources, move to files; from files, move to the diff; in narrow layout, open the selected item |

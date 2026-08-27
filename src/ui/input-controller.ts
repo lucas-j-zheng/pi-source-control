@@ -11,6 +11,12 @@ export function actionForKey(
   _state: ReviewSessionState,
   _layout: Layout,
 ): UiAction | undefined {
+  if (matchesKey(data, "shift+k")) {
+    return { type: "move", delta: -5 };
+  }
+  if (matchesKey(data, "shift+j")) {
+    return { type: "move", delta: 5 };
+  }
   if (matchesKey(data, "up") || matchesKey(data, "k")) {
     return { type: "move", delta: -1 };
   }
@@ -26,6 +32,8 @@ export function actionForKey(
   if (matchesKey(data, "p")) return { type: "prev-hunk" };
   if (matchesKey(data, "pageDown")) return { type: "page", delta: 1 };
   if (matchesKey(data, "pageUp")) return { type: "page", delta: -1 };
+  if (matchesKey(data, "ctrl+d")) return { type: "half-page", delta: 1 };
+  if (matchesKey(data, "ctrl+u")) return { type: "half-page", delta: -1 };
   if (matchesKey(data, "home")) return { type: "home" };
   if (matchesKey(data, "end")) return { type: "end" };
   if (matchesKey(data, "left")) {

@@ -189,6 +189,49 @@ describe("review state", () => {
     expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
   });
 
+  it("half-page scrolls the diff by half the body height and clamps", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "focus-diff" }, env);
+    state = apply(state, { type: "half-page", delta: 1 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(3);
+
+    state = apply(state, { type: "half-page", delta: 100 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(34);
+    state = apply(state, { type: "half-page", delta: -100 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
+  });
+
+  it("half-page moves list selection by half the body height", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "half-page", delta: 1 }, env);
+    expect(state.selectedSourceId).toBe("commit:two");
+
+    state = apply(state, { type: "half-page", delta: -1 }, env);
+    expect(state.selectedSourceId).toBe("working");
+    state = apply(state, { type: "enter" }, env);
+    state = apply(state, { type: "half-page", delta: 1 }, env);
+    expect(state.selectedFileId).toBe("working:file-2");
+  });
+
+  it("five-line move clamps at list and diff bounds", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "move", delta: 5 }, env);
+    expect(state.selectedSourceId).toBe("commit:two");
+    state = apply(state, { type: "move", delta: -5 }, env);
+    expect(state.selectedSourceId).toBe("working");
+
+    state = apply(state, { type: "focus-diff" }, env);
+    state = apply(state, { type: "move", delta: 5 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(5);
+    state = apply(state, { type: "move", delta: 100 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(34);
+    state = apply(state, { type: "move", delta: -100 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
+  });
+
   it("next and previous hunk land on hunk rows", () => {
     const env = fakeEnv();
     let state = createInitialState("working", env);

@@ -25,6 +25,7 @@ export interface ReviewSessionState {
 export type UiAction =
   | { type: "move"; delta: number }
   | { type: "page"; delta: number }
+  | { type: "half-page"; delta: number }
   | { type: "home" }
   | { type: "end" }
   | { type: "focus-next" }
@@ -486,6 +487,15 @@ export function reduce(
     }
     case "page": {
       const delta = Math.trunc(action.delta) * Math.max(1, env.layout.bodyHeight - 1);
+      const result = moveList(working, delta, env);
+      next = result.state;
+      effects = result.effects;
+      break;
+    }
+    case "half-page": {
+      const delta =
+        Math.trunc(action.delta) *
+        Math.max(1, Math.floor(env.layout.bodyHeight / 2));
       const result = moveList(working, delta, env);
       next = result.state;
       effects = result.effects;
