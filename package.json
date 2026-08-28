@@ -36,5 +36,14 @@
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucas-j-zheng/pi-source-control.git"
+  },
+  "homepage": "https://github.com/lucas-j-zheng/pi-source-control#readme",
+  "bugs": {
+    "url": "https://github.com/lucas-j-zheng/pi-source-control/issues"
+  },
+  "author": "Lucas Zheng"
 }
