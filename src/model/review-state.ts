@@ -3,6 +3,22 @@ import type { Layout } from "../ui/layout.ts";
 
 export type FocusedPane = "sources" | "files" | "diff";
 
+export interface LineAnchor {
+  hunkIndex: number;
+  lineIndex: number;
+}
+
+export function anchorEquals(
+  a: LineAnchor | undefined,
+  b: LineAnchor | undefined,
+): boolean {
+  return a === b ||
+    (a !== undefined &&
+      b !== undefined &&
+      a.hunkIndex === b.hunkIndex &&
+      a.lineIndex === b.lineIndex);
+}
+
 export interface ReviewSessionState {
   focusedPane: FocusedPane;
   selectedSourceId: string;
@@ -16,6 +32,7 @@ export interface ReviewSessionState {
   verticalOffsetByFile: Map<string, number>;
   horizontalOffsetByFile: Map<string, number>;
   selectedHunkByFile: Map<string, number>;
+  cursorByFile: Map<string, LineAnchor>;
   pendingSourceId?: string;
   helpVisible: boolean;
   notice?: string;
@@ -63,6 +80,12 @@ export interface ReviewEnv {
     file: ChangedFile,
     mode: "unified" | "side-by-side",
   ): number[];
+  lineAnchors(file: ChangedFile): LineAnchor[];
+  rowForAnchor(
+    file: ChangedFile,
+    anchor: LineAnchor,
+    mode: "unified" | "side-by-side",
+  ): number;
 }
 
 export type ReviewEffect =
@@ -117,6 +140,7 @@ function finish(
       state.verticalOffsetByFile === original.verticalOffsetByFile &&
       state.horizontalOffsetByFile === original.horizontalOffsetByFile &&
       state.selectedHunkByFile === original.selectedHunkByFile &&
+      state.cursorByFile === original.cursorByFile &&
       state.pendingSourceId === original.pendingSourceId &&
       state.helpVisible === original.helpVisible &&
       state.notice === original.notice)
@@ -134,6 +158,26 @@ function withMapValue<K, V>(
   if (map.get(key) === value) return undefined;
   const next = new Map(map);
   next.set(key, value);
+  return next;
+}
+
+function cursorForSelectedFile(
+  cursorByFile: Map<string, LineAnchor>,
+  file: ChangedFile,
+  env: ReviewEnv,
+): Map<string, LineAnchor> {
+  const anchors = env.lineAnchors(file);
+  const current = cursorByFile.get(file.id);
+  if (anchors.some((anchor) => anchorEquals(anchor, current))) {
+    return cursorByFile;
+  }
+
+  const firstAnchor = anchors[0];
+  if (firstAnchor === undefined && current === undefined) return cursorByFile;
+
+  const next = new Map(cursorByFile);
+  if (firstAnchor === undefined) next.delete(file.id);
+  else next.set(file.id, firstAnchor);
   return next;
 }
 
@@ -172,6 +216,11 @@ function sourceSelection(
       selectedFileBySource;
   }
 
+  let cursorByFile = state.cursorByFile;
+  if (selectedFile !== undefined) {
+    cursorByFile = cursorForSelectedFile(cursorByFile, selectedFile, env);
+  }
+
   const shouldLoad =
     source.kind === "commit" &&
     files.length === 0 &&
@@ -184,6 +233,7 @@ function sourceSelection(
     state.selectedSourceId !== sourceId ||
     state.selectedFileId !== selectedFileId ||
     state.selectedFileBySource !== selectedFileBySource ||
+    state.cursorByFile !== cursorByFile ||
     state.sourceScrollOffset !== sourceScrollOffset ||
     state.fileScrollOffset !== fileScrollOffset ||
     (shouldLoad && state.pendingSourceId !== sourceId);
@@ -195,6 +245,7 @@ function sourceSelection(
       selectedSourceId: sourceId,
       selectedFileId,
       selectedFileBySource,
+      cursorByFile,
       sourceScrollOffset,
       fileScrollOffset,
       pendingSourceId: shouldLoad ? sourceId : state.pendingSourceId,
@@ -224,11 +275,17 @@ function fileSelection(
       state.selectedSourceId,
       fileId,
     ) ?? state.selectedFileBySource;
+  let cursorByFile = state.cursorByFile;
+  const file = env.fileById(fileId);
+  if (file !== undefined) {
+    cursorByFile = cursorForSelectedFile(cursorByFile, file, env);
+  }
 
   if (
     state.selectedFileId === fileId &&
     state.fileScrollOffset === fileScrollOffset &&
-    state.selectedFileBySource === selectedFileBySource
+    state.selectedFileBySource === selectedFileBySource &&
+    state.cursorByFile === cursorByFile
   ) {
     return state;
   }
@@ -237,6 +294,7 @@ function fileSelection(
     ...state,
     selectedFileId: fileId,
     selectedFileBySource,
+    cursorByFile,
     fileScrollOffset,
   };
 }
@@ -259,16 +317,65 @@ function verticalMaximum(
   return Math.max(0, env.diffRowCount(file, mode) - env.layout.bodyHeight);
 }
 
-function setVerticalOffset(
+function setCursorAndFollow(
   state: ReviewSessionState,
   file: ChangedFile,
-  offset: number,
+  anchor: LineAnchor,
+  env: ReviewEnv,
 ): ReviewSessionState {
-  if ((state.verticalOffsetByFile.get(file.id) ?? 0) === offset) return state;
-  const nextMap = withMapValue(state.verticalOffsetByFile, file.id, offset);
-  return nextMap === undefined
-    ? state
-    : { ...state, verticalOffsetByFile: nextMap };
+  let cursorByFile = state.cursorByFile;
+  if (!anchorEquals(cursorByFile.get(file.id), anchor)) {
+    cursorByFile = new Map(cursorByFile);
+    cursorByFile.set(file.id, anchor);
+  }
+
+  let verticalOffsetByFile = state.verticalOffsetByFile;
+  const row = env.rowForAnchor(file, anchor, state.viewMode);
+  if (row >= 0) {
+    const currentOffset = verticalOffsetByFile.get(file.id) ?? 0;
+    const offset = keepVisible(
+      row,
+      currentOffset,
+      env.diffRowCount(file, state.viewMode),
+      env.layout.bodyHeight,
+    );
+    if (offset !== currentOffset) {
+      verticalOffsetByFile = new Map(verticalOffsetByFile);
+      verticalOffsetByFile.set(file.id, offset);
+    }
+  }
+
+  if (
+    cursorByFile === state.cursorByFile &&
+    verticalOffsetByFile === state.verticalOffsetByFile
+  ) {
+    return state;
+  }
+  return { ...state, cursorByFile, verticalOffsetByFile };
+}
+
+function moveDiffCursor(
+  state: ReviewSessionState,
+  delta: number,
+  env: ReviewEnv,
+): ReviewSessionState {
+  const file = selectedFile(state, env);
+  if (file === undefined) return state;
+  const anchors = env.lineAnchors(file);
+  if (anchors.length === 0) return state;
+
+  const currentAnchor = state.cursorByFile.get(file.id);
+  const foundIndex = anchors.findIndex((anchor) =>
+    anchorEquals(anchor, currentAnchor)
+  );
+  const currentIndex = foundIndex < 0 ? 0 : foundIndex;
+  const nextIndex = clamp(
+    currentIndex + Math.trunc(delta),
+    0,
+    anchors.length - 1,
+  );
+  const anchor = anchors[nextIndex];
+  return anchor === undefined ? state : setCursorAndFollow(state, file, anchor, env);
 }
 
 function moveList(
@@ -308,15 +415,7 @@ function moveList(
     };
   }
 
-  const file = selectedFile(state, env);
-  if (file === undefined) return { state, effects: [] };
-  const current = state.verticalOffsetByFile.get(file.id) ?? 0;
-  const offset = clamp(
-    current + Math.trunc(delta),
-    0,
-    verticalMaximum(state, file, env),
-  );
-  return { state: setVerticalOffset(state, file, offset), effects: [] };
+  return { state: moveDiffCursor(state, delta, env), effects: [] };
 }
 
 function moveToBoundary(
@@ -343,8 +442,14 @@ function moveToBoundary(
 
   const file = selectedFile(state, env);
   if (file === undefined) return { state, effects: [] };
-  const offset = end ? verticalMaximum(state, file, env) : 0;
-  return { state: setVerticalOffset(state, file, offset), effects: [] };
+  const anchors = env.lineAnchors(file);
+  const anchor = end ? anchors.at(-1) : anchors[0];
+  return {
+    state: anchor === undefined
+      ? state
+      : setCursorAndFollow(state, file, anchor, env),
+    effects: [],
+  };
 }
 
 function moveHunk(
@@ -356,41 +461,33 @@ function moveHunk(
   if (file === undefined) {
     return state.notice === "No hunks" ? state : { ...state, notice: "No hunks" };
   }
-  const rows = env.hunkRows(file, state.viewMode);
-  if (rows.length === 0) {
+  const anchors = env.lineAnchors(file);
+  const hunkIndexes = [...new Set(anchors.map((anchor) => anchor.hunkIndex))];
+  if (hunkIndexes.length === 0) {
     return state.notice === "No hunks" ? state : { ...state, notice: "No hunks" };
   }
 
-  const current = state.verticalOffsetByFile.get(file.id) ?? 0;
-  let hunkIndex: number;
-  if (direction > 0) {
-    const next = rows.findIndex((row) => row > current);
-    hunkIndex = next < 0 ? rows.length - 1 : next;
-  } else {
-    hunkIndex = 0;
-    for (let index = rows.length - 1; index >= 0; index -= 1) {
-      if ((rows[index] ?? 0) < current) {
-        hunkIndex = index;
-        break;
-      }
-    }
-  }
+  const currentAnchor = state.cursorByFile.get(file.id) ?? anchors[0];
+  const currentHunkPosition = Math.max(
+    0,
+    hunkIndexes.indexOf(currentAnchor?.hunkIndex ?? -1),
+  );
+  const targetPosition = clamp(
+    currentHunkPosition + direction,
+    0,
+    hunkIndexes.length - 1,
+  );
+  const hunkIndex = hunkIndexes[targetPosition];
+  const anchor = anchors.find((candidate) => candidate.hunkIndex === hunkIndex);
+  if (hunkIndex === undefined || anchor === undefined) return state;
 
-  const row = rows[hunkIndex];
-  if (row === undefined) return state;
-  const verticalOffsetByFile =
-    withMapValue(state.verticalOffsetByFile, file.id, row) ??
-    state.verticalOffsetByFile;
+  const moved = setCursorAndFollow(state, file, anchor, env);
   const selectedHunkByFile =
-    withMapValue(state.selectedHunkByFile, file.id, hunkIndex) ??
-    state.selectedHunkByFile;
-  if (
-    verticalOffsetByFile === state.verticalOffsetByFile &&
-    selectedHunkByFile === state.selectedHunkByFile
-  ) {
-    return state;
-  }
-  return { ...state, verticalOffsetByFile, selectedHunkByFile };
+    withMapValue(moved.selectedHunkByFile, file.id, hunkIndex) ??
+    moved.selectedHunkByFile;
+  return selectedHunkByFile === moved.selectedHunkByFile
+    ? moved
+    : { ...moved, selectedHunkByFile };
 }
 
 export function createInitialState(
@@ -398,6 +495,9 @@ export function createInitialState(
   env: ReviewEnv,
 ): ReviewSessionState {
   const firstFile = env.filesForSource(initialSourceId)[0];
+  const firstAnchor = firstFile === undefined
+    ? undefined
+    : env.lineAnchors(firstFile)[0];
   return {
     focusedPane: "sources",
     selectedSourceId: initialSourceId,
@@ -414,6 +514,10 @@ export function createInitialState(
     verticalOffsetByFile: new Map(),
     horizontalOffsetByFile: new Map(),
     selectedHunkByFile: new Map(),
+    cursorByFile:
+      firstFile === undefined || firstAnchor === undefined
+        ? new Map()
+        : new Map([[firstFile.id, firstAnchor]]),
     helpVisible: false,
     version: 0,
   };

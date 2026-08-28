@@ -4,6 +4,10 @@ import type {
   DiffLineKind,
 } from "../model/diff.ts";
 import {
+  anchorEquals,
+  type LineAnchor,
+} from "../model/review-state.ts";
+import {
   expandTabs,
   padToWidth,
   sliceColumns,
@@ -17,6 +21,7 @@ export interface UnifiedRow {
   text: string;
   hunkIndex: number;
   isHunkHeader: boolean;
+  anchor?: LineAnchor;
 }
 
 export interface UnifiedViewInput {
@@ -25,6 +30,8 @@ export interface UnifiedViewInput {
   horizontalOffset: number;
   height: number;
   placeholder?: string;
+  cursor?: LineAnchor;
+  focused?: boolean;
 }
 
 export function buildUnifiedRows(
@@ -32,6 +39,8 @@ export function buildUnifiedRows(
   styler: Styler,
   codeWidth: number,
   horizontalOffset: number,
+  cursor?: LineAnchor,
+  focused = true,
 ): UnifiedRow[] {
   const safeCodeWidth = Math.max(0, Math.trunc(codeWidth));
   const safeHorizontalOffset = Math.max(0, Math.trunc(horizontalOffset));
@@ -59,16 +68,26 @@ export function buildUnifiedRows(
       isHunkHeader: true,
     });
 
-    for (const line of hunk.lines) {
+    for (const [lineIndex, line] of hunk.lines.entries()) {
+      const anchor: LineAnchor | undefined = line.kind === "metadata"
+        ? undefined
+        : { hunkIndex: hunk.index, lineIndex };
+      let text = renderDiffLine(
+        line,
+        styler,
+        safeCodeWidth,
+        safeHorizontalOffset,
+      );
+      if (anchorEquals(anchor, cursor)) {
+        text = focused
+          ? styler.bg("selectedBg", text)
+          : styler.bold(text);
+      }
       rows.push({
-        text: renderDiffLine(
-          line,
-          styler,
-          safeCodeWidth,
-          safeHorizontalOffset,
-        ),
+        text,
         hunkIndex: hunk.index,
         isHunkHeader: false,
+        ...(anchor === undefined ? {} : { anchor }),
       });
 
       if (line.noNewlineAtEnd === true) {
@@ -109,6 +128,8 @@ export function renderUnifiedDiff(
     styler,
     Math.max(0, safeWidth - UNIFIED_GUTTER_WIDTH),
     input.horizontalOffset,
+    input.cursor,
+    input.focused,
   );
   const maximumOffset = Math.max(0, rows.length - safeHeight);
   const verticalOffset = Math.min(

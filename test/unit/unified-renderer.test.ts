@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   expandTabs,
@@ -11,7 +11,7 @@ import {
 } from "../../src/diff/line-slicing.ts";
 import { parseUnifiedDiff } from "../../src/diff/unified-parser.ts";
 import type { ChangedFile } from "../../src/model/diff.ts";
-import { plainStyler } from "../../src/ui/theme.ts";
+import { plainStyler, type Styler } from "../../src/ui/theme.ts";
 import {
   buildUnifiedRows,
   hunkStartRows,
@@ -115,6 +115,59 @@ describe("unified renderer", () => {
     expect(rows[5]?.text.trim()).toBe("\\ No newline at end of file");
     expect(rows[3]).toMatchObject({ hunkIndex: 0, isHunkHeader: false });
     expect(rows[5]).toMatchObject({ hunkIndex: 0, isHunkHeader: false });
+  });
+
+  it("the cursor row is highlighted and no other row is", () => {
+    const bg = vi.fn((_role: "selectedBg", text: string) => `<selected>${text}</selected>`);
+    const styler: Styler = { ...plainStyler, bg };
+    const cursor = { hunkIndex: 0, lineIndex: 1 };
+    const rows = buildUnifiedRows(modifiedFile(), styler, 40, 0, cursor);
+
+    expect(bg).toHaveBeenCalledTimes(1);
+    expect(rows.filter((row) => row.text.includes("<selected>"))).toHaveLength(1);
+    expect(rows.find((row) => row.text.includes("<selected>"))?.anchor).toEqual(
+      cursor,
+    );
+  });
+
+  it("rows carry anchors for content lines only", () => {
+    const [file] = parseUnifiedDiff(fixture("no-newline.diff"), {
+      group: "working",
+    });
+    if (file === undefined) throw new Error("no-newline.diff did not contain a file");
+    const rows = buildUnifiedRows(file, plainStyler, 32, 0);
+
+    expect(rows[0]?.anchor).toBeUndefined();
+    expect(rows[1]?.anchor).toBeUndefined();
+    expect(rows[2]?.anchor).toEqual({ hunkIndex: 0, lineIndex: 0 });
+    expect(rows[3]?.anchor).toBeUndefined();
+    expect(rows[4]?.anchor).toEqual({ hunkIndex: 0, lineIndex: 1 });
+    expect(rows[5]?.anchor).toBeUndefined();
+  });
+
+  it("cursor rendering is width-safe at every test width", () => {
+    const ansiStyler: Styler = {
+      fg: (_role, text) => `\u001b[32m${text}\u001b[0m`,
+      bg: (_role, text) => `\u001b[48;5;236m${text}\u001b[0m`,
+      bold: (text) => `\u001b[1m${text}\u001b[0m`,
+    };
+    const file = modifiedFile();
+
+    for (const width of [50, 60, 89, 90, 110, 129, 130, 160, 220]) {
+      const lines = renderUnifiedDiff(
+        {
+          file,
+          verticalOffset: 0,
+          horizontalOffset: 0,
+          height: 8,
+          cursor: { hunkIndex: 0, lineIndex: 0 },
+        },
+        width,
+        ansiStyler,
+      );
+
+      for (const line of lines) expect(visibleWidth(line)).toBe(width);
+    }
   });
 
   it("placeholders for binary, oversized, unmerged, empty and no file", () => {

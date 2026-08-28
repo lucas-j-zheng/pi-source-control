@@ -8,6 +8,7 @@ import type {
 import {
   createInitialState,
   reduce,
+  type LineAnchor,
   type ReviewEnv,
   type ReviewSessionState,
   type UiAction,
@@ -74,6 +75,23 @@ interface EnvOptions {
   customSources?: SourceListItem[];
 }
 
+const diffAnchors: LineAnchor[] = Array.from(
+  { length: 3 },
+  (_, hunkIndex) =>
+    Array.from({ length: 10 }, (_unused, lineIndex) => ({
+      hunkIndex,
+      lineIndex,
+    })),
+).flat();
+
+function anchorPosition(anchor: LineAnchor): number {
+  return diffAnchors.findIndex(
+    (candidate) =>
+      candidate.hunkIndex === anchor.hunkIndex &&
+      candidate.lineIndex === anchor.lineIndex,
+  );
+}
+
 function fakeEnv(options: EnvOptions = {}): ReviewEnv {
   const envSources = options.customSources ?? sources;
   return {
@@ -90,6 +108,16 @@ function fakeEnv(options: EnvOptions = {}): ReviewEnv {
     },
     hunkRows() {
       return [1, 15, 30];
+    },
+    lineAnchors() {
+      return diffAnchors;
+    },
+    rowForAnchor(_file, anchor, mode) {
+      const position = anchorPosition(anchor);
+      if (position < 0) return -1;
+      return mode === "unified"
+        ? position + anchor.hunkIndex + 2
+        : Math.floor(position / 2) + anchor.hunkIndex + 2;
     },
   };
 }
@@ -114,6 +142,24 @@ describe("review state", () => {
       version: 0,
     });
     expect(state.selectedFileBySource.get("working")).toBe("working:file-0");
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 0,
+    });
+  });
+
+  it("selecting a file places the cursor on its first changed line", () => {
+    const env = fakeEnv();
+    const state = apply(
+      createInitialState("working", env),
+      { type: "select-file", fileId: "working:file-1" },
+      env,
+    );
+
+    expect(state.cursorByFile.get("working:file-1")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 0,
+    });
   });
 
   it("moving source selection replaces the file list and selects its first file", () => {
@@ -166,40 +212,64 @@ describe("review state", () => {
     expect(state.selectedFileId).toBe("working:file-2");
   });
 
-  it("diff scrolling is bounded by row count and body height", () => {
+  it("moving in the diff pane moves the cursor one line at a time and clamps at both ends", () => {
     const env = fakeEnv();
     let state = createInitialState("working", env);
     state = apply(state, { type: "focus-diff" }, env);
+    state = apply(state, { type: "move", delta: 1 }, env);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 1,
+    });
     state = apply(state, { type: "move", delta: 100 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(34);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 2,
+      lineIndex: 9,
+    });
 
     state = apply(state, { type: "move", delta: -100 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 0,
+    });
   });
 
-  it("page, home and end move the diff viewport", () => {
+  it("page and half-page move the cursor by a viewport and clamp", () => {
     const env = fakeEnv();
     let state = createInitialState("working", env);
     state = apply(state, { type: "focus-diff" }, env);
     state = apply(state, { type: "page", delta: 1 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(5);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 5,
+    });
+    state = apply(state, { type: "half-page", delta: 1 }, env);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 8,
+    });
     state = apply(state, { type: "end" }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(34);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 2,
+      lineIndex: 9,
+    });
     state = apply(state, { type: "home" }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 0,
+    });
   });
 
-  it("half-page scrolls the diff by half the body height and clamps", () => {
+  it("the viewport follows the cursor when it would leave the body height", () => {
     const env = fakeEnv();
     let state = createInitialState("working", env);
     state = apply(state, { type: "focus-diff" }, env);
-    state = apply(state, { type: "half-page", delta: 1 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(3);
-
-    state = apply(state, { type: "half-page", delta: 100 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(34);
-    state = apply(state, { type: "half-page", delta: -100 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
+    state = apply(state, { type: "move", delta: 3 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0") ?? 0).toBe(0);
+    state = apply(state, { type: "move", delta: 1 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(1);
+    state = apply(state, { type: "move", delta: 1 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(2);
   });
 
   it("half-page moves list selection by half the body height", () => {
@@ -225,23 +295,68 @@ describe("review state", () => {
 
     state = apply(state, { type: "focus-diff" }, env);
     state = apply(state, { type: "move", delta: 5 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(5);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 5,
+    });
     state = apply(state, { type: "move", delta: 100 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(34);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 2,
+      lineIndex: 9,
+    });
     state = apply(state, { type: "move", delta: -100 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 0,
+    });
   });
 
-  it("next and previous hunk land on hunk rows", () => {
+  it("next and previous hunk move the cursor to the first line of that hunk", () => {
     const env = fakeEnv();
     let state = createInitialState("working", env);
     state = apply(state, { type: "next-hunk" }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(1);
-    expect(state.selectedHunkByFile.get("working:file-0")).toBe(0);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 1,
+      lineIndex: 0,
+    });
+    expect(state.selectedHunkByFile.get("working:file-0")).toBe(1);
     state = apply(state, { type: "next-hunk" }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(15);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 2,
+      lineIndex: 0,
+    });
     state = apply(state, { type: "prev-hunk" }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(1);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 1,
+      lineIndex: 0,
+    });
+  });
+
+  it("wheel scrolling moves the viewport without moving the cursor", () => {
+    const env = fakeEnv();
+    const initial = createInitialState("working", env);
+    const cursor = initial.cursorByFile.get("working:file-0");
+    const state = apply(
+      initial,
+      { type: "set-scroll", pane: "diff", offset: 12 },
+      env,
+    );
+
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(12);
+    expect(state.cursorByFile.get("working:file-0")).toBe(cursor);
+  });
+
+  it("the cursor survives toggling to side-by-side and back", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "focus-diff" }, env);
+    state = apply(state, { type: "move", delta: 7 }, env);
+    const cursor = state.cursorByFile.get("working:file-0");
+
+    state = apply(state, { type: "toggle-view" }, env);
+    expect(state.cursorByFile.get("working:file-0")).toBe(cursor);
+    state = apply(state, { type: "toggle-view" }, env);
+    expect(state.cursorByFile.get("working:file-0")).toBe(cursor);
   });
 
   it("focus cycles with Tab and Shift+Tab", () => {
@@ -296,8 +411,7 @@ describe("review state", () => {
       rowCount: (_file, mode) => (mode === "unified" ? 40 : 10),
     });
     let state = createInitialState("working", env);
-    state = apply(state, { type: "focus-diff" }, env);
-    state = apply(state, { type: "end" }, env);
+    state = apply(state, { type: "set-scroll", pane: "diff", offset: 34 }, env);
     state = apply(state, { type: "toggle-view" }, env);
 
     expect(state.viewMode).toBe("side-by-side");

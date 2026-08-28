@@ -12,6 +12,8 @@ const env: ReviewEnv = {
   fileById: () => undefined,
   diffRowCount: () => 0,
   hunkRows: () => [],
+  lineAnchors: () => [],
+  rowForAnchor: () => -1,
 };
 const state = createInitialState("working", env);
 

@@ -11,8 +11,10 @@ import type {
   SourceListItem,
 } from "../model/diff.ts";
 import {
+  anchorEquals,
   createInitialState,
   reduce,
+  type LineAnchor,
   type ReviewEffect,
   type ReviewEnv,
   type ReviewSessionState,
@@ -593,6 +595,11 @@ export class SourceControlView extends VStack {
       verticalOffset,
       horizontalOffset,
       height,
+      cursor:
+        selectedFile === undefined
+          ? undefined
+          : this.state.cursorByFile.get(selectedFile.id),
+      focused: this.state.focusedPane === "diff",
     };
     return this.state.viewMode === "side-by-side"
       ? renderSideBySide(input, width, this.styler)
@@ -610,6 +617,8 @@ export class SourceControlView extends VStack {
 
     const horizontalOffset =
       this.state.horizontalOffsetByFile.get(selectedFile!.id) ?? 0;
+    const cursor = this.state.cursorByFile.get(selectedFile!.id);
+    const focused = this.state.focusedPane === "diff";
     if (this.state.viewMode === "side-by-side") {
       const height = sideBySideFits(width)
         ? buildSideBySideRows(
@@ -617,6 +626,8 @@ export class SourceControlView extends VStack {
             this.styler,
             width,
             horizontalOffset,
+            cursor,
+            focused,
           ).length
         : 1;
       return renderSideBySide(
@@ -625,6 +636,8 @@ export class SourceControlView extends VStack {
           verticalOffset: 0,
           horizontalOffset,
           height,
+          cursor,
+          focused,
         },
         width,
         this.styler,
@@ -636,6 +649,8 @@ export class SourceControlView extends VStack {
       this.styler,
       Math.max(0, width - UNIFIED_GUTTER_WIDTH),
       horizontalOffset,
+      cursor,
+      focused,
     ).length;
     return renderUnifiedDiff(
       {
@@ -643,6 +658,8 @@ export class SourceControlView extends VStack {
         verticalOffset: 0,
         horizontalOffset,
         height,
+        cursor,
+        focused,
       },
       width,
       this.styler,
@@ -766,7 +783,46 @@ export class SourceControlView extends VStack {
         mode === "side-by-side"
           ? sbsHunkStartRows(file)
           : hunkStartRows(file),
+      lineAnchors: (file) => this.lineAnchors(file),
+      rowForAnchor: (file, anchor, mode) =>
+        this.rowForAnchor(file, anchor, mode, layout),
     };
+  }
+
+  private lineAnchors(file: ChangedFile): LineAnchor[] {
+    return file.hunks.flatMap((hunk) =>
+      hunk.lines.flatMap((line, lineIndex) =>
+        line.kind === "metadata"
+          ? []
+          : [{ hunkIndex: hunk.index, lineIndex }]
+      )
+    );
+  }
+
+  private rowForAnchor(
+    file: ChangedFile,
+    anchor: LineAnchor,
+    mode: ReviewSessionState["viewMode"],
+    layout: Layout,
+  ): number {
+    const horizontalOffset = this.state.horizontalOffsetByFile.get(file.id) ?? 0;
+    if (mode === "side-by-side") {
+      return buildSideBySideRows(
+        file,
+        this.styler,
+        this.diffWidth(layout),
+        horizontalOffset,
+      ).findIndex((row) =>
+        row.anchors?.some((candidate) => anchorEquals(candidate, anchor)) ??
+        anchorEquals(row.anchor, anchor)
+      );
+    }
+    return buildUnifiedRows(
+      file,
+      this.styler,
+      Math.max(0, this.diffWidth(layout) - UNIFIED_GUTTER_WIDTH),
+      horizontalOffset,
+    ).findIndex((row) => anchorEquals(row.anchor, anchor));
   }
 
   private diffWidth(layout: Layout): number {
@@ -906,19 +962,32 @@ export class SourceControlView extends VStack {
     const files = this.filesForSource(sourceId);
     let selectedFileBySource = this.state.selectedFileBySource;
     let selectedFileId = this.state.selectedFileId;
+    let selectedFile: ChangedFile | undefined;
     if (this.state.selectedSourceId === sourceId) {
       const remembered = selectedFileBySource.get(sourceId);
-      const selected = files.find((file) => file.id === remembered) ?? files[0];
-      selectedFileId = selected?.id;
-      if (selected !== undefined && remembered !== selected.id) {
+      selectedFile = files.find((file) => file.id === remembered) ?? files[0];
+      selectedFileId = selectedFile?.id;
+      if (selectedFile !== undefined && remembered !== selectedFile.id) {
         selectedFileBySource = new Map(selectedFileBySource);
-        selectedFileBySource.set(sourceId, selected.id);
+        selectedFileBySource.set(sourceId, selectedFile.id);
+      }
+    }
+    let cursorByFile = this.state.cursorByFile;
+    if (
+      selectedFile !== undefined &&
+      cursorByFile.get(selectedFile.id) === undefined
+    ) {
+      const firstAnchor = this.lineAnchors(selectedFile)[0];
+      if (firstAnchor !== undefined) {
+        cursorByFile = new Map(cursorByFile);
+        cursorByFile.set(selectedFile.id, firstAnchor);
       }
     }
     this.state = {
       ...this.state,
       selectedFileId,
       selectedFileBySource,
+      cursorByFile,
       pendingSourceId:
         this.state.pendingSourceId === sourceId
           ? undefined
@@ -1010,6 +1079,16 @@ export class SourceControlView extends VStack {
         currentFingerprints.has(fingerprint),
       ),
     );
+    const cursorByFile = new Map(this.state.cursorByFile);
+    if (selectedFile !== undefined) {
+      const anchors = this.lineAnchors(selectedFile);
+      const current = cursorByFile.get(selectedFile.id);
+      if (!anchors.some((anchor) => anchorEquals(anchor, current))) {
+        const firstAnchor = anchors[0];
+        if (firstAnchor === undefined) cursorByFile.delete(selectedFile.id);
+        else cursorByFile.set(selectedFile.id, firstAnchor);
+      }
+    }
     this.state = {
       ...this.state,
       selectedSourceId,
@@ -1018,6 +1097,7 @@ export class SourceControlView extends VStack {
       sourceScrollOffset: 0,
       fileScrollOffset: 0,
       reviewedFingerprints,
+      cursorByFile,
       pendingSourceId: undefined,
       notice: undefined,
       version: this.state.version + 1,

@@ -4,7 +4,11 @@ import {
   padToWidth,
   sliceColumns,
 } from "../diff/line-slicing.ts";
-import type { ChangedFile, DiffCell } from "../model/diff.ts";
+import type { ChangedFile, DiffCell, DiffHunk } from "../model/diff.ts";
+import {
+  anchorEquals,
+  type LineAnchor,
+} from "../model/review-state.ts";
 import { MIN_SBS_CODE_WIDTH, SBS_GUTTER_WIDTH } from "./layout.ts";
 import type { FgRole, Styler } from "./theme.ts";
 import { placeholderFor } from "./unified-renderer.ts";
@@ -15,6 +19,8 @@ export interface SbsRow {
   text: string;
   hunkIndex: number;
   isHunkHeader: boolean;
+  anchor?: LineAnchor;
+  anchors?: LineAnchor[];
 }
 
 export interface SbsViewInput {
@@ -22,6 +28,8 @@ export interface SbsViewInput {
   verticalOffset: number;
   horizontalOffset: number;
   height: number;
+  cursor?: LineAnchor;
+  focused?: boolean;
 }
 
 export function sideBySideFits(width: number): boolean {
@@ -34,6 +42,8 @@ export function buildSideBySideRows(
   styler: Styler,
   width: number,
   horizontalOffset: number,
+  cursor?: LineAnchor,
+  focused = true,
 ): SbsRow[] {
   const safeWidth = Math.max(0, Math.trunc(width));
   const safeHorizontalOffset = Math.max(0, Math.trunc(horizontalOffset));
@@ -55,7 +65,9 @@ export function buildSideBySideRows(
     file.hunks.map((hunk) => [hunk.index, hunk.header]),
   );
 
-  for (const alignedRow of alignFile(file.hunks)) {
+  const alignedRows = alignFile(file.hunks);
+  const anchorsByRow = file.hunks.flatMap(anchorsForHunkRows);
+  for (const [rowIndex, alignedRow] of alignedRows.entries()) {
     const hunkHeader = hunkHeaders.get(alignedRow.hunkIndex);
     const isHunkHeader =
       hunkHeader !== undefined &&
@@ -64,8 +76,9 @@ export function buildSideBySideRows(
       alignedRow.right?.kind === "metadata" &&
       alignedRow.right.content === hunkHeader;
 
-    rows.push({
-      text: joinColumns(
+    const anchors = anchorsByRow[rowIndex] ?? [];
+    const cursorAnchor = anchors.find((anchor) => anchorEquals(anchor, cursor));
+    let text = joinColumns(
         isHunkHeader
           ? renderHunkHeader(
               hunkHeader,
@@ -93,9 +106,19 @@ export function buildSideBySideRows(
               styler,
             ),
         divider,
-      ),
+      );
+    if (anchors.some((anchor) => anchorEquals(anchor, cursor))) {
+      text = focused
+        ? styler.bg("selectedBg", text)
+        : styler.bold(text);
+    }
+    rows.push({
+      text,
       hunkIndex: alignedRow.hunkIndex,
       isHunkHeader,
+      ...(anchors[0] === undefined
+        ? {}
+        : { anchor: cursorAnchor ?? anchors[0], anchors }),
     });
   }
 
@@ -131,6 +154,8 @@ export function renderSideBySide(
     styler,
     safeWidth,
     input.horizontalOffset,
+    input.cursor,
+    input.focused,
   );
   const maximumOffset = Math.max(0, rows.length - safeHeight);
   const verticalOffset = Math.min(
@@ -142,6 +167,61 @@ export function renderSideBySide(
   return Array.from({ length: safeHeight }, (_, row) =>
     padToWidth(visibleRows[row]?.text ?? "", safeWidth),
   );
+}
+
+function anchorsForHunkRows(hunk: DiffHunk): LineAnchor[][] {
+  const rows: LineAnchor[][] = [[]];
+  let lineIndex = 0;
+
+  while (lineIndex < hunk.lines.length) {
+    const line = hunk.lines[lineIndex];
+    if (line === undefined) break;
+
+    if (line.kind === "context") {
+      rows.push([{ hunkIndex: hunk.index, lineIndex }]);
+      lineIndex += 1;
+      continue;
+    }
+    if (line.kind === "metadata") {
+      rows.push([]);
+      lineIndex += 1;
+      continue;
+    }
+
+    const deletionIndexes: number[] = [];
+    const additionIndexes: number[] = [];
+    if (line.kind === "deletion") {
+      while (hunk.lines[lineIndex]?.kind === "deletion") {
+        deletionIndexes.push(lineIndex);
+        lineIndex += 1;
+      }
+      while (hunk.lines[lineIndex]?.kind === "addition") {
+        additionIndexes.push(lineIndex);
+        lineIndex += 1;
+      }
+    } else {
+      while (hunk.lines[lineIndex]?.kind === "addition") {
+        additionIndexes.push(lineIndex);
+        lineIndex += 1;
+      }
+    }
+
+    const rowCount = Math.max(deletionIndexes.length, additionIndexes.length);
+    for (let index = 0; index < rowCount; index += 1) {
+      const anchors: LineAnchor[] = [];
+      const deletionIndex = deletionIndexes[index];
+      const additionIndex = additionIndexes[index];
+      if (deletionIndex !== undefined) {
+        anchors.push({ hunkIndex: hunk.index, lineIndex: deletionIndex });
+      }
+      if (additionIndex !== undefined) {
+        anchors.push({ hunkIndex: hunk.index, lineIndex: additionIndex });
+      }
+      rows.push(anchors);
+    }
+  }
+
+  return rows;
 }
 
 export function sbsHunkStartRows(file: ChangedFile): number[] {
