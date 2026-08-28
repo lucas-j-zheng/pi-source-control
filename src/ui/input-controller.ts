@@ -11,6 +11,12 @@ export function actionForKey(
   _state: ReviewSessionState,
   _layout: Layout,
 ): UiAction | undefined {
+  if (matchesKey(data, "ctrl+e") || matchesKey(data, "shift+down")) {
+    return { type: "scroll-view", delta: 1 };
+  }
+  if (matchesKey(data, "ctrl+y") || matchesKey(data, "shift+up")) {
+    return { type: "scroll-view", delta: -1 };
+  }
   if (matchesKey(data, "shift+k")) {
     return { type: "move", delta: -5 };
   }

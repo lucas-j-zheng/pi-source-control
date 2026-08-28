@@ -332,18 +332,106 @@ describe("review state", () => {
     });
   });
 
-  it("wheel scrolling moves the viewport without moving the cursor", () => {
+  it("scroll-view moves the viewport without moving the cursor while it stays visible", () => {
     const env = fakeEnv();
-    const initial = createInitialState("working", env);
-    const cursor = initial.cursorByFile.get("working:file-0");
-    const state = apply(
-      initial,
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "focus-diff" }, env);
+    const cursor = state.cursorByFile.get("working:file-0");
+
+    state = apply(state, { type: "scroll-view", delta: 1 }, env);
+
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(1);
+    expect(state.cursorByFile.get("working:file-0")).toBe(cursor);
+  });
+
+  it("scroll-view pulls the cursor into view once it would scroll off", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "focus-diff" }, env);
+
+    state = apply(state, { type: "scroll-view", delta: 3 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(3);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 1,
+    });
+
+    state = apply(state, { type: "move", delta: 7 }, env);
+    state = apply(state, { type: "scroll-view", delta: -5 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 3,
+    });
+  });
+
+  it("scroll-view clamps at the top and bottom of the diff", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "focus-diff" }, env);
+
+    state = apply(state, { type: "scroll-view", delta: 100 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(34);
+
+    state = apply(state, { type: "scroll-view", delta: -100 }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
+  });
+
+  it("scroll-view is a no-op on the source and file lists", () => {
+    const env = fakeEnv();
+    let sourceState = createInitialState("working", env);
+    sourceState = apply(
+      sourceState,
+      { type: "set-notice", notice: "Keep this notice" },
+      env,
+    );
+    const sourceResult = reduce(
+      sourceState,
+      { type: "scroll-view", delta: 1 },
+      env,
+    );
+    expect(sourceResult.state).toBe(sourceState);
+    expect(sourceResult.state.notice).toBe("Keep this notice");
+
+    let fileState = apply(sourceState, { type: "enter" }, env);
+    fileState = apply(
+      fileState,
+      { type: "set-notice", notice: "Keep this notice too" },
+      env,
+    );
+    const fileResult = reduce(
+      fileState,
+      { type: "scroll-view", delta: -1 },
+      env,
+    );
+    expect(fileResult.state).toBe(fileState);
+    expect(fileResult.state.notice).toBe("Keep this notice too");
+  });
+
+  it("wheel scrolling also pulls the cursor into view", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    state = apply(
+      state,
       { type: "set-scroll", pane: "diff", offset: 12 },
       env,
     );
 
     expect(state.verticalOffsetByFile.get("working:file-0")).toBe(12);
-    expect(state.cursorByFile.get("working:file-0")).toBe(cursor);
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 1,
+      lineIndex: 0,
+    });
+
+    state = apply(
+      state,
+      { type: "set-scroll", pane: "diff", offset: 0 },
+      env,
+    );
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 3,
+    });
   });
 
   it("the cursor survives toggling to side-by-side and back", () => {

@@ -27,6 +27,8 @@ const HELP_LINES = [
   "PageDown / PageUp  Scroll the diff by approximately one viewport",
   "Home / End  Jump to the beginning/end of the selected file diff",
   "← / →  Horizontal scrolling when content is wider than its pane",
+  "Ctrl+E / Ctrl+Y  Scroll view (cursor stays)",
+  "Shift+↑ / Shift+↓  Scroll view",
   "v  Toggle unified and side-by-side views",
   "Space  Mark/unmark the selected file as reviewed",
   "g  Refresh sources and diffs",

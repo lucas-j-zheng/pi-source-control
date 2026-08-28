@@ -72,6 +72,28 @@ describe("input controller", () => {
     });
   });
 
+  it("ctrl+e and ctrl+y map to scroll-view", () => {
+    expect(actionForKey("\u0005", state, layout)).toEqual({
+      type: "scroll-view",
+      delta: 1,
+    });
+    expect(actionForKey("\u0019", state, layout)).toEqual({
+      type: "scroll-view",
+      delta: -1,
+    });
+  });
+
+  it("shift+up and shift+down map to scroll-view", () => {
+    expect(actionForKey("\u001b[1;2A", state, layout)).toEqual({
+      type: "scroll-view",
+      delta: -1,
+    });
+    expect(actionForKey("\u001b[1;2B", state, layout)).toEqual({
+      type: "scroll-view",
+      delta: 1,
+    });
+  });
+
   it("lowercase j and k still move one line", () => {
     expect(actionForKey("j", state, layout)).toEqual({
       type: "move",

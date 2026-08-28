@@ -55,6 +55,8 @@ Bare `/diff` starts on the Working Tree source. Direct commit and range forms ar
 | `PageDown` / `PageUp` | Scroll the diff by approximately one viewport |
 | `Home` / `End` | Jump to beginning/end of the selected file diff |
 | `←` / `→` | Horizontal scrolling when content is wider than its pane |
+| `Ctrl+E` / `Ctrl+Y` | Scroll view (cursor stays) |
+| `Shift+↑` / `Shift+↓` | Scroll view |
 | `v` | Toggle between the default unified view and optional side-by-side view when width permits |
 | `Space` | Mark/unmark the selected file as reviewed |
 | `g` | Refresh Git status, recent commits, and diffs |

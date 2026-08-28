@@ -41,6 +41,7 @@ export interface ReviewSessionState {
 
 export type UiAction =
   | { type: "move"; delta: number }
+  | { type: "scroll-view"; delta: number }
   | { type: "page"; delta: number }
   | { type: "half-page"; delta: number }
   | { type: "home" }
@@ -317,6 +318,44 @@ function verticalMaximum(
   return Math.max(0, env.diffRowCount(file, mode) - env.layout.bodyHeight);
 }
 
+function setDiffViewportOffset(
+  state: ReviewSessionState,
+  file: ChangedFile,
+  offset: number,
+  env: ReviewEnv,
+): ReviewSessionState {
+  const currentOffset = state.verticalOffsetByFile.get(file.id) ?? 0;
+  if (offset === currentOffset) return state;
+
+  const verticalOffsetByFile = new Map(state.verticalOffsetByFile);
+  verticalOffsetByFile.set(file.id, offset);
+
+  let cursorByFile = state.cursorByFile;
+  const currentAnchor = cursorByFile.get(file.id);
+  if (currentAnchor !== undefined) {
+    const cursorRow = env.rowForAnchor(file, currentAnchor, state.viewMode);
+    const viewportEnd = offset + env.layout.bodyHeight;
+    if (cursorRow < offset || cursorRow >= viewportEnd) {
+      const visibleAnchors = env.lineAnchors(file).filter((anchor) => {
+        const row = env.rowForAnchor(file, anchor, state.viewMode);
+        return row >= offset && row < viewportEnd;
+      });
+      const nextAnchor = offset > currentOffset
+        ? visibleAnchors[0]
+        : visibleAnchors.at(-1);
+      if (
+        nextAnchor !== undefined &&
+        !anchorEquals(currentAnchor, nextAnchor)
+      ) {
+        cursorByFile = new Map(cursorByFile);
+        cursorByFile.set(file.id, nextAnchor);
+      }
+    }
+  }
+
+  return { ...state, verticalOffsetByFile, cursorByFile };
+}
+
 function setCursorAndFollow(
   state: ReviewSessionState,
   file: ChangedFile,
@@ -565,17 +604,17 @@ export function reduce(
       if (next.fileScrollOffset !== offset) {
         next = { ...next, fileScrollOffset: offset };
       }
-    } else if (next.selectedFileId !== undefined) {
-      const verticalOffsetByFile = withMapValue(
-        next.verticalOffsetByFile,
-        next.selectedFileId,
-        offset,
-      );
-      if (verticalOffsetByFile !== undefined) {
-        next = { ...next, verticalOffsetByFile };
+    } else {
+      const file = selectedFile(next, env);
+      if (file !== undefined) {
+        next = setDiffViewportOffset(next, file, offset, env);
       }
     }
     return finish(state, next);
+  }
+
+  if (action.type === "scroll-view" && state.focusedPane !== "diff") {
+    return { state, effects: [] };
   }
 
   const working = clearNotice(state);
@@ -587,6 +626,19 @@ export function reduce(
       const result = moveList(working, action.delta, env);
       next = result.state;
       effects = result.effects;
+      break;
+    }
+    case "scroll-view": {
+      const file = selectedFile(working, env);
+      if (file !== undefined) {
+        const current = working.verticalOffsetByFile.get(file.id) ?? 0;
+        const offset = clamp(
+          current + Math.trunc(action.delta),
+          0,
+          verticalMaximum(working, file, env),
+        );
+        next = setDiffViewportOffset(working, file, offset, env);
+      }
       break;
     }
     case "page": {
