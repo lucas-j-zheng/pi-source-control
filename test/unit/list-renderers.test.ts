@@ -226,7 +226,16 @@ describe("list renderers", () => {
     expect(help.some((line) => line.includes("Ctrl+D / Ctrl+U  Half page"))).toBe(true);
     expect(help.some((line) => line.includes("Ctrl+E / Ctrl+Y  Scroll view (cursor stays)"))).toBe(true);
     expect(help.some((line) => line.includes("Shift+↑ / Shift+↓  Scroll view"))).toBe(true);
-    expect(help.some((line) => line.includes("h / Backspace  Back a level"))).toBe(true);
+    expect(
+      help.some((line) =>
+        line.includes("Esc  Back a level (closes from the source list)"),
+      ),
+    ).toBe(true);
+    expect(
+      help.some((line) =>
+        line.includes("h / Backspace  Back a level (closes from the source list)"),
+      ),
+    ).toBe(true);
     expect(help.some((line) => line.includes("l  Enter selected"))).toBe(true);
     expect(help.some((line) => line.includes("Space  Mark/unmark"))).toBe(true);
   });

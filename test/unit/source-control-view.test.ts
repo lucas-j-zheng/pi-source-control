@@ -263,6 +263,18 @@ describe("source control view", () => {
     expect(subject.getState().focusedPane).toBe("sources");
   });
 
+  it("Esc from the diff pane in wide mode returns focus to the file list without closing", () => {
+    const onClose = vi.fn();
+    const subject = view({ onClose });
+    subject.render(160);
+    subject.dispatch({ type: "focus-diff" });
+
+    subject.handleInput("\u001b");
+
+    expect(subject.getState().focusedPane).toBe("files");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("a data-source error surfaces as a footer notice", async () => {
     const review = commitReview();
     const item = commitItem(review);

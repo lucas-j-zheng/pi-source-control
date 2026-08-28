@@ -684,7 +684,7 @@ export function reduce(
       }
       break;
     case "back":
-      if (env.layout.mode === "narrow" && working.focusedPane !== "sources") {
+      if (working.focusedPane !== "sources") {
         next = {
           ...working,
           focusedPane: working.focusedPane === "diff" ? "files" : "sources",

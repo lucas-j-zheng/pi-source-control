@@ -47,8 +47,8 @@ Bare `/diff` starts on the Working Tree source. Direct commit and range forms ar
 | `Tab` | Move focus among source list, file list, and diff pane |
 | `Shift+Tab` | Move focus in the opposite direction |
 | `Enter` | From sources, move to files; from files, move to the diff; in narrow layout, open the selected item |
-| `Esc` | Return from a narrow/maximized child view; otherwise close |
-| `h` / `Backspace` | Back a level |
+| `Esc` | Back a level (closes from the source list) |
+| `h` / `Backspace` | Back a level (closes from the source list) |
 | `l` | Enter selected |
 | `q` | Close the reviewer |
 | `n` / `p` | Jump to next/previous hunk in the selected file |

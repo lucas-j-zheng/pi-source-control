@@ -460,12 +460,11 @@ describe("review state", () => {
     expect(state.focusedPane).toBe("diff");
   });
 
-  it("enter advances focus and escape walks back in narrow mode then closes", () => {
-    const env = fakeEnv({ layout: computeLayout(60, 10) });
+  it("back steps diff to files to sources in wide mode then closes", () => {
+    const env = fakeEnv({ layout: computeLayout(160, 10) });
     let state = createInitialState("working", env);
-    state = apply(state, { type: "enter" }, env);
-    state = apply(state, { type: "enter" }, env);
-    expect(state.focusedPane).toBe("diff");
+    state = apply(state, { type: "focus-diff" }, env);
+
     state = apply(state, { type: "back" }, env);
     expect(state.focusedPane).toBe("files");
     state = apply(state, { type: "back" }, env);
@@ -475,10 +474,72 @@ describe("review state", () => {
     ]);
   });
 
-  it("q always closes", () => {
-    for (const layout of [computeLayout(60, 10), computeLayout(220, 10)]) {
-      const env = fakeEnv({ layout });
-      const state = apply(createInitialState("working", env), { type: "focus-diff" }, env);
+  it("back steps the same way in medium and narrow modes", () => {
+    for (const width of [110, 60]) {
+      const env = fakeEnv({ layout: computeLayout(width, 10) });
+      let state = apply(
+        createInitialState("working", env),
+        { type: "focus-diff" },
+        env,
+      );
+
+      state = apply(state, { type: "back" }, env);
+      expect(state.focusedPane).toBe("files");
+      state = apply(state, { type: "back" }, env);
+      expect(state.focusedPane).toBe("sources");
+      expect(reduce(state, { type: "back" }, env).effects).toEqual([
+        { type: "close" },
+      ]);
+    }
+  });
+
+  it("back preserves selection, scroll offsets and the line cursor", () => {
+    const env = fakeEnv({ layout: computeLayout(160, 10) });
+    const initial = createInitialState("working", env);
+    const state: ReviewSessionState = {
+      ...initial,
+      focusedPane: "diff",
+      selectedSourceId: "staged",
+      selectedFileId: "staged:file-2",
+      selectedFileBySource: new Map([
+        ["working", "working:file-1"],
+        ["staged", "staged:file-2"],
+      ]),
+      sourceScrollOffset: 2,
+      fileScrollOffset: 1,
+      verticalOffsetByFile: new Map([["staged:file-2", 12]]),
+      horizontalOffsetByFile: new Map([["staged:file-2", 8]]),
+      selectedHunkByFile: new Map([["staged:file-2", 1]]),
+      cursorByFile: new Map([
+        ["staged:file-2", { hunkIndex: 1, lineIndex: 4 }],
+      ]),
+    };
+    const preserved = {
+      selectedSourceId: state.selectedSourceId,
+      selectedFileId: state.selectedFileId,
+      selectedFileBySource: state.selectedFileBySource,
+      sourceScrollOffset: state.sourceScrollOffset,
+      fileScrollOffset: state.fileScrollOffset,
+      verticalOffsetByFile: state.verticalOffsetByFile,
+      horizontalOffsetByFile: state.horizontalOffsetByFile,
+      selectedHunkByFile: state.selectedHunkByFile,
+      cursorByFile: state.cursorByFile,
+    };
+
+    const files = apply(state, { type: "back" }, env);
+    const sourcesState = apply(files, { type: "back" }, env);
+
+    expect(files).toMatchObject(preserved);
+    expect(sourcesState).toMatchObject(preserved);
+  });
+
+  it("q closes immediately from every pane", () => {
+    const env = fakeEnv({ layout: computeLayout(160, 10) });
+    for (const focusedPane of ["sources", "files", "diff"] as const) {
+      const state = {
+        ...createInitialState("working", env),
+        focusedPane,
+      };
       expect(reduce(state, { type: "close" }, env).effects).toEqual([
         { type: "close" },
       ]);
