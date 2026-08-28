@@ -221,9 +221,11 @@ describe("list renderers", () => {
     );
     const help = renderFooter({ ...base, helpVisible: true }, 80, plainStyler);
     expect(help[0]).toContain("1/4 reviewed");
-    expect(help).toHaveLength(18);
+    expect(help).toHaveLength(20);
     expect(help.some((line) => line.includes("J / K  Move 5 lines"))).toBe(true);
     expect(help.some((line) => line.includes("Ctrl+D / Ctrl+U  Half page"))).toBe(true);
+    expect(help.some((line) => line.includes("h / Backspace  Back a level"))).toBe(true);
+    expect(help.some((line) => line.includes("l  Enter selected"))).toBe(true);
     expect(help.some((line) => line.includes("Space  Mark/unmark"))).toBe(true);
   });
 

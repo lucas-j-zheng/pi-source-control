@@ -25,8 +25,16 @@ export function actionForKey(
   }
   if (matchesKey(data, "shift+tab")) return { type: "focus-prev" };
   if (matchesKey(data, "tab")) return { type: "focus-next" };
-  if (matchesKey(data, "enter")) return { type: "enter" };
-  if (matchesKey(data, "escape")) return { type: "back" };
+  if (matchesKey(data, "enter") || matchesKey(data, "l")) {
+    return { type: "enter" };
+  }
+  if (
+    matchesKey(data, "escape") ||
+    matchesKey(data, "backspace") ||
+    matchesKey(data, "h")
+  ) {
+    return { type: "back" };
+  }
   if (matchesKey(data, "q")) return { type: "close" };
   if (matchesKey(data, "n")) return { type: "next-hunk" };
   if (matchesKey(data, "p")) return { type: "prev-hunk" };

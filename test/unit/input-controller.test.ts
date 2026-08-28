@@ -24,8 +24,6 @@ describe("input controller", () => {
       ["j", { type: "move", delta: 1 }],
       ["\t", { type: "focus-next" }],
       ["\u001b[Z", { type: "focus-prev" }],
-      ["\r", { type: "enter" }],
-      ["\u001b", { type: "back" }],
       ["q", { type: "close" }],
       ["n", { type: "next-hunk" }],
       ["p", { type: "prev-hunk" }],
@@ -81,5 +79,21 @@ describe("input controller", () => {
       type: "move",
       delta: -1,
     });
+  });
+
+  it("backspace and h map to back", () => {
+    expect(actionForKey("\u007f", state, layout)).toEqual({ type: "back" });
+    expect(actionForKey("h", state, layout)).toEqual({ type: "back" });
+    expect(actionForKey("H", state, layout)).toBeUndefined();
+  });
+
+  it("l maps to enter", () => {
+    expect(actionForKey("l", state, layout)).toEqual({ type: "enter" });
+    expect(actionForKey("L", state, layout)).toBeUndefined();
+  });
+
+  it("escape and enter are unchanged", () => {
+    expect(actionForKey("\u001b", state, layout)).toEqual({ type: "back" });
+    expect(actionForKey("\r", state, layout)).toEqual({ type: "enter" });
   });
 });

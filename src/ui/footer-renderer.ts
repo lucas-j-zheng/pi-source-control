@@ -20,6 +20,8 @@ const HELP_LINES = [
   "Shift+Tab  Move focus to the previous pane",
   "Enter  Open the selected item or move into the diff",
   "Esc  Go back or close",
+  "h / Backspace  Back a level",
+  "l  Enter selected",
   "q  Close the reviewer",
   "n / p  Jump to the next/previous hunk",
   "PageDown / PageUp  Scroll the diff by approximately one viewport",
