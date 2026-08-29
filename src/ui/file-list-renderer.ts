@@ -9,6 +9,7 @@ export interface FileRowInput {
   files: ChangedFile[];
   selectedId?: string;
   reviewed: Set<string>;
+  commented?: Set<string>;
   focused: boolean;
   scrollOffset: number;
   maxRows: number;
@@ -33,7 +34,9 @@ function fitLine(text: string, width: number): string {
 function fileRowText(file: ChangedFile, input: FileRowInput, width: number): string {
   const selected = file.id === input.selectedId;
   const reviewed = input.reviewed.has(file.id);
-  const prefix = `${selected ? ">" : " "} ${reviewed ? "✓" : " "} ${statusLetter(file.status)} `;
+  const commented = input.commented?.has(file.id) ?? false;
+  const marker = reviewed ? "✓" : commented ? "●" : " ";
+  const prefix = `${selected ? ">" : " "} ${marker} ${statusLetter(file.status)} `;
   const directory = file.displayDirectory;
   const counts = `+${file.additions} −${file.deletions}`;
   const withDirectory = directory ? `${prefix}${file.displayName}  ${directory}` : `${prefix}${file.displayName}`;

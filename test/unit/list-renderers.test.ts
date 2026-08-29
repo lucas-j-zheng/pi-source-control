@@ -88,6 +88,7 @@ const fileInput = {
   files,
   selectedId: files[0]!.id,
   reviewed: new Set([files[0]!.id]),
+  commented: new Set([files[0]!.id, files[1]!.id]),
   focused: true,
   scrollOffset: 0,
   maxRows: 20,
@@ -121,7 +122,7 @@ describe("list renderers", () => {
   it("file list shows reviewed marker and status letters", () => {
     const result = renderFileList(fileInput, 90, plainStyler);
     expect(result.lines[1]).toContain("> ✓ M session-controller-with-long-name.ts");
-    expect(result.lines[2]).toContain("A new.ts");
+    expect(result.lines[2]).toContain("● A new.ts");
     expect(result.lines[3]).toContain("D old.ts");
     expect(result.lines[4]).toContain("U README.md");
   });
@@ -221,7 +222,7 @@ describe("list renderers", () => {
     );
     const help = renderFooter({ ...base, helpVisible: true }, 80, plainStyler);
     expect(help[0]).toContain("1/4 reviewed");
-    expect(help).toHaveLength(22);
+    expect(help).toHaveLength(25);
     expect(help.some((line) => line.includes("J / K  Move 5 lines"))).toBe(true);
     expect(help.some((line) => line.includes("Ctrl+D / Ctrl+U  Half page"))).toBe(true);
     expect(help.some((line) => line.includes("Ctrl+E / Ctrl+Y  Scroll view (cursor stays)"))).toBe(true);
@@ -238,6 +239,12 @@ describe("list renderers", () => {
     ).toBe(true);
     expect(help.some((line) => line.includes("l  Enter selected"))).toBe(true);
     expect(help.some((line) => line.includes("Space  Mark/unmark"))).toBe(true);
+    expect(help.some((line) => line.includes("c  Add or edit a comment"))).toBe(true);
+    expect(help.some((line) => line.includes("d  Delete the comment"))).toBe(true);
+    expect(help.some((line) => line.includes("S  Submit queued comments"))).toBe(true);
+    expect(
+      renderFooter({ ...base, commentCount: 2 }, 100, plainStyler)[0],
+    ).toContain("2 comments · S submit");
   });
 
   it("every renderer is width-safe at all test widths", () => {

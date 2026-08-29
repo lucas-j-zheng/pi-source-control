@@ -37,6 +37,9 @@ describe("input controller", () => {
       ["\u001b[C", { type: "scroll-horizontal", delta: 1 }],
       ["v", { type: "toggle-view" }],
       [" ", { type: "toggle-reviewed" }],
+      ["c", { type: "compose-comment" }],
+      ["d", { type: "delete-comment" }],
+      ["S", { type: "submit-comments" }],
       ["g", { type: "refresh" }],
       ["?", { type: "toggle-help" }],
     ];

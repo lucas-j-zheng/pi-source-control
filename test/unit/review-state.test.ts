@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type {
   ChangedFile,
   DiffGroupId,
   SourceListItem,
 } from "../../src/model/diff.ts";
+import type { ReviewComment } from "../../src/model/review-comment.ts";
 import {
   createInitialState,
   reduce,
@@ -14,6 +15,8 @@ import {
   type UiAction,
 } from "../../src/model/review-state.ts";
 import { computeLayout, type Layout } from "../../src/ui/layout.ts";
+import { SourceControlView } from "../../src/ui/source-control-view.ts";
+import { plainStyler } from "../../src/ui/theme.ts";
 
 const sources: SourceListItem[] = [
   { kind: "working", id: "working", label: "Working Tree" },
@@ -128,6 +131,23 @@ function apply(
   env: ReviewEnv,
 ): ReviewSessionState {
   return reduce(state, action, env).state;
+}
+
+function reviewComment(overrides: Partial<ReviewComment> = {}): ReviewComment {
+  return {
+    id: "working:file-0:0:0",
+    fileId: "working:file-0",
+    filePath: "working/file-0.ts",
+    anchor: { hunkIndex: 0, lineIndex: 0 },
+    newLineNumber: 1,
+    lineKind: "addition",
+    lineText: "value",
+    contextText: "+value",
+    scopeLabel: "working tree",
+    body: "Please fix this.",
+    createdAt: 1,
+    ...overrides,
+  };
 }
 
 describe("review state", () => {
@@ -584,6 +604,148 @@ describe("review state", () => {
       reduce(createInitialState("working", env), { type: "refresh" }, env)
         .effects,
     ).toEqual([{ type: "refresh" }]);
+  });
+
+  it("c on a line emits a compose-comment effect for that anchor", () => {
+    const env = fakeEnv();
+    const state = createInitialState("working", env);
+    const file = allFiles.get("working")?.[0];
+    if (file === undefined) throw new Error("expected a working file");
+
+    expect(reduce(state, { type: "compose-comment" }, env).effects).toEqual([
+      {
+        type: "compose-comment",
+        file,
+        anchor: { hunkIndex: 0, lineIndex: 0 },
+      },
+    ]);
+  });
+
+  it("add-comment queues a comment and a second comment on the same line replaces it", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    const first = reviewComment();
+    const replacement = reviewComment({ body: "Use the safer value." });
+
+    state = apply(state, { type: "add-comment", comment: first }, env);
+    state = apply(state, { type: "add-comment", comment: replacement }, env);
+
+    expect(state.comments).toEqual([replacement]);
+    expect(reduce(state, { type: "compose-comment" }, env).effects[0]).toMatchObject({
+      type: "compose-comment",
+      existingBody: "Use the safer value.",
+    });
+  });
+
+  it("c with no anchorable line sets a notice", () => {
+    const env = { ...fakeEnv(), lineAnchors: () => [] };
+    const result = reduce(
+      createInitialState("working", env),
+      { type: "compose-comment" },
+      env,
+    );
+
+    expect(result.effects).toEqual([]);
+    expect(result.state.notice).toBe("Nothing to comment on here.");
+  });
+
+  it("d removes the comment on the cursor line", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    state = apply(
+      state,
+      { type: "add-comment", comment: reviewComment() },
+      env,
+    );
+
+    state = apply(state, { type: "delete-comment" }, env);
+
+    expect(state.comments).toEqual([]);
+  });
+
+  it("submit-comments emits submit-review then close and clears the queue", () => {
+    const env = fakeEnv();
+    const state = apply(
+      createInitialState("working", env),
+      { type: "add-comment", comment: reviewComment() },
+      env,
+    );
+
+    const result = reduce(state, { type: "submit-comments" }, env);
+
+    expect(result.effects.map((effect) => effect.type)).toEqual([
+      "submit-review",
+      "close",
+    ]);
+    expect(result.effects[0]).toMatchObject({
+      type: "submit-review",
+      message: expect.stringContaining("Please fix this."),
+    });
+    expect(result.state.comments).toEqual([]);
+  });
+
+  it("submit-comments with no comments sets a notice and does not close", () => {
+    const env = fakeEnv();
+    const result = reduce(
+      createInitialState("working", env),
+      { type: "submit-comments" },
+      env,
+    );
+
+    expect(result.effects).toEqual([]);
+    expect(result.state.notice).toBe("No comments to submit.");
+  });
+
+  it("refresh keeps comments on unchanged patches and drops the rest", async () => {
+    const before = [changedFile("working", 0), changedFile("working", 1)];
+    const after = [
+      before[0]!,
+      { ...before[1]!, patchFingerprint: "changed-fingerprint" },
+    ];
+    const makeReview = (files: ChangedFile[]) => ({
+      repositoryRoot: "/repo",
+      scope: { kind: "workspace" as const },
+      groups: [
+        { id: "working" as const, title: "Working Tree", files },
+        { id: "staged" as const, title: "Staged Changes", files: [] },
+      ],
+      generatedAt: 0,
+    });
+    const subject = new SourceControlView({
+      data: {
+        initialReview: makeReview(before),
+        recentCommits: [],
+        async loadCommit() {
+          return makeReview(after);
+        },
+        async refresh() {
+          return { review: makeReview(after), recentCommits: [] };
+        },
+      },
+      host: { requestRender: () => undefined, rows: () => 24 },
+      styler: plainStyler,
+      initialSourceId: "working",
+      composeComment: async () => undefined,
+      submitReview: () => undefined,
+      onClose: () => undefined,
+    });
+    subject.dispatch({ type: "add-comment", comment: reviewComment() });
+    subject.dispatch({
+      type: "add-comment",
+      comment: reviewComment({
+        id: "working:file-1:0:0",
+        fileId: "working:file-1",
+        filePath: "working/file-1.ts",
+      }),
+    });
+
+    subject.dispatch({ type: "refresh" });
+
+    await vi.waitFor(() => expect(subject.getState().comments).toHaveLength(1));
+    expect(subject.getState().comments[0]?.fileId).toBe("working:file-0");
+    expect(subject.getState().notice).toBe(
+      "1 comment dropped after refresh.",
+    );
   });
 
   it("list scroll offsets keep the selection visible", () => {

@@ -58,6 +58,9 @@ export function actionForKey(
   }
   if (matchesKey(data, "v")) return { type: "toggle-view" };
   if (matchesKey(data, "space")) return { type: "toggle-reviewed" };
+  if (matchesKey(data, "c")) return { type: "compose-comment" };
+  if (matchesKey(data, "d")) return { type: "delete-comment" };
+  if (matchesKey(data, "shift+s")) return { type: "submit-comments" };
   if (matchesKey(data, "g")) return { type: "refresh" };
   if (matchesKey(data, "?")) return { type: "toggle-help" };
   return undefined;

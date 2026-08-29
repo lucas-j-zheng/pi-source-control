@@ -47,6 +47,8 @@ function makeView(height: number): SourceControlView {
     host: new Host(height),
     styler: plainStyler,
     initialSourceId: "working",
+    composeComment: async () => undefined,
+    submitReview: () => undefined,
     onClose() {},
   });
 }

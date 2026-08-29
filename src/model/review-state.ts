@@ -1,4 +1,8 @@
 import type { ChangedFile, SourceListItem } from "./diff.ts";
+import {
+  buildReviewMessage,
+  type ReviewComment,
+} from "./review-comment.ts";
 import type { Layout } from "../ui/layout.ts";
 
 export type FocusedPane = "sources" | "files" | "diff";
@@ -33,6 +37,7 @@ export interface ReviewSessionState {
   horizontalOffsetByFile: Map<string, number>;
   selectedHunkByFile: Map<string, number>;
   cursorByFile: Map<string, LineAnchor>;
+  comments: ReviewComment[];
   pendingSourceId?: string;
   helpVisible: boolean;
   notice?: string;
@@ -56,6 +61,10 @@ export type UiAction =
   | { type: "scroll-horizontal"; delta: number }
   | { type: "toggle-view" }
   | { type: "toggle-reviewed" }
+  | { type: "compose-comment" }
+  | { type: "add-comment"; comment: ReviewComment }
+  | { type: "delete-comment" }
+  | { type: "submit-comments" }
   | { type: "refresh" }
   | { type: "toggle-help" }
   | { type: "select-source"; sourceId: string }
@@ -92,7 +101,14 @@ export interface ReviewEnv {
 export type ReviewEffect =
   | { type: "close" }
   | { type: "refresh" }
-  | { type: "load-source"; sourceId: string };
+  | { type: "load-source"; sourceId: string }
+  | {
+      type: "compose-comment";
+      file: ChangedFile;
+      anchor: LineAnchor;
+      existingBody?: string;
+    }
+  | { type: "submit-review"; message: string };
 
 export interface ReduceResult {
   state: ReviewSessionState;
@@ -142,6 +158,7 @@ function finish(
       state.horizontalOffsetByFile === original.horizontalOffsetByFile &&
       state.selectedHunkByFile === original.selectedHunkByFile &&
       state.cursorByFile === original.cursorByFile &&
+      state.comments === original.comments &&
       state.pendingSourceId === original.pendingSourceId &&
       state.helpVisible === original.helpVisible &&
       state.notice === original.notice)
@@ -557,6 +574,7 @@ export function createInitialState(
       firstFile === undefined || firstAnchor === undefined
         ? new Map()
         : new Map([[firstFile.id, firstAnchor]]),
+    comments: [],
     helpVisible: false,
     version: 0,
   };
@@ -762,6 +780,61 @@ export function reduce(
       }
       break;
     }
+    case "compose-comment": {
+      const file = selectedFile(working, env);
+      const anchor = file === undefined
+        ? undefined
+        : working.cursorByFile.get(file.id);
+      if (file === undefined || anchor === undefined) {
+        next = {
+          ...working,
+          notice: "Nothing to comment on here.",
+        };
+        break;
+      }
+      const id = `${file.id}:${anchor.hunkIndex}:${anchor.lineIndex}`;
+      const existingBody = working.comments.find(
+        (comment) => comment.id === id,
+      )?.body;
+      effects = [existingBody === undefined
+        ? { type: "compose-comment", file, anchor }
+        : { type: "compose-comment", file, anchor, existingBody }];
+      break;
+    }
+    case "add-comment": {
+      const existingIndex = working.comments.findIndex(
+        (comment) => comment.id === action.comment.id,
+      );
+      const comments = [...working.comments];
+      if (existingIndex < 0) comments.push(action.comment);
+      else comments[existingIndex] = action.comment;
+      next = { ...working, comments };
+      break;
+    }
+    case "delete-comment": {
+      const file = selectedFile(working, env);
+      const anchor = file === undefined
+        ? undefined
+        : working.cursorByFile.get(file.id);
+      if (file === undefined || anchor === undefined) break;
+      const id = `${file.id}:${anchor.hunkIndex}:${anchor.lineIndex}`;
+      const comments = working.comments.filter((comment) => comment.id !== id);
+      if (comments.length !== working.comments.length) {
+        next = { ...working, comments };
+      }
+      break;
+    }
+    case "submit-comments":
+      if (working.comments.length === 0) {
+        next = { ...working, notice: "No comments to submit." };
+      } else {
+        effects = [
+          { type: "submit-review", message: buildReviewMessage(working.comments) },
+          { type: "close" },
+        ];
+        next = { ...working, comments: [] };
+      }
+      break;
     case "refresh":
       next =
         working.pendingSourceId === undefined

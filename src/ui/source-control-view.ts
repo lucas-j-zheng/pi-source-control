@@ -11,6 +11,11 @@ import type {
   SourceListItem,
 } from "../model/diff.ts";
 import {
+  buildComment,
+  describeScope,
+  type ReviewComment,
+} from "../model/review-comment.ts";
+import {
   anchorEquals,
   createInitialState,
   reduce,
@@ -72,6 +77,8 @@ export interface SourceControlViewOptions {
   host: ViewHost;
   styler: Styler;
   initialSourceId: string;
+  composeComment(prefill: string | undefined): Promise<string | undefined>;
+  submitReview(message: string): void;
   onClose(): void;
 }
 
@@ -186,6 +193,8 @@ export class SourceControlView extends VStack {
   private readonly data: ViewDataSource;
   private readonly host: ViewHost;
   private readonly styler: Styler;
+  private readonly composeComment: SourceControlViewOptions["composeComment"];
+  private readonly submitReview: SourceControlViewOptions["submitReview"];
   private readonly onClose: () => void;
   private primaryReview: DiffReview;
   private recentCommits: SourceListItem[];
@@ -216,6 +225,8 @@ export class SourceControlView extends VStack {
     this.data = options.data;
     this.host = options.host;
     this.styler = options.styler;
+    this.composeComment = options.composeComment;
+    this.submitReview = options.submitReview;
     this.onClose = options.onClose;
     this.primaryReview = options.data.initialReview;
     this.recentCommits = options.data.recentCommits;
@@ -336,6 +347,7 @@ export class SourceControlView extends VStack {
         focusedPane: this.state.focusedPane,
         compact: layout.compactFooter,
         helpVisible: this.state.helpVisible,
+        commentCount: this.state.comments.length,
         notice: this.state.notice,
       },
       safeWidth,
@@ -398,6 +410,24 @@ export class SourceControlView extends VStack {
 
   getPanes(): FullscreenPanes {
     return this.fullscreenPanes;
+  }
+
+  getCommentEditorTitle(): string {
+    const file = this.selectedFile();
+    const anchor = file === undefined
+      ? undefined
+      : this.state.cursorByFile.get(file.id);
+    const hunk = anchor === undefined
+      ? undefined
+      : file?.hunks.find((candidate) => candidate.index === anchor.hunkIndex);
+    const line = anchor === undefined ? undefined : hunk?.lines[anchor.lineIndex];
+    if (file === undefined || line === undefined || line.kind === "metadata") {
+      return "Review comment";
+    }
+    const lineNumber = line.newLineNumber !== undefined
+      ? String(line.newLineNumber)
+      : `-${line.oldLineNumber ?? 0}`;
+    return `Comment on ${file.newPath}:${lineNumber}`;
   }
 
   rebuildFullscreenTree(width: number): void {
@@ -558,11 +588,18 @@ export class SourceControlView extends VStack {
         .map((file) => file.id),
     );
     const loading = this.loadingSourceIds.has(this.state.selectedSourceId);
+    const scopeLabel = this.scopeLabelForSource(this.state.selectedSourceId);
+    const commentedIds = new Set(
+      this.state.comments
+        .filter((comment) => comment.scopeLabel === scopeLabel)
+        .map((comment) => comment.fileId),
+    );
     return renderFileList(
       {
         files,
         selectedId: this.state.selectedFileId,
         reviewed: reviewedIds,
+        commented: commentedIds,
         focused: this.state.focusedPane === "files",
         scrollOffset,
         maxRows,
@@ -685,6 +722,7 @@ export class SourceControlView extends VStack {
         focusedPane: this.state.focusedPane,
         compact,
         helpVisible: this.state.helpVisible,
+        commentCount: this.state.comments.length,
         notice: this.state.notice,
       },
       width,
@@ -917,8 +955,50 @@ export class SourceControlView extends VStack {
       this.startRefresh();
       return;
     }
+    if (effect.type === "compose-comment") {
+      this.startCommentComposition(effect);
+      return;
+    }
+    if (effect.type === "submit-review") {
+      this.submitReview(effect.message);
+      return;
+    }
     const source = this.sourceById(effect.sourceId);
     if (source?.kind === "commit") this.startCommitLoad(source);
+  }
+
+  private startCommentComposition(
+    effect: Extract<ReviewEffect, { type: "compose-comment" }>,
+  ): void {
+    const hunk = effect.file.hunks.find(
+      (candidate) => candidate.index === effect.anchor.hunkIndex,
+    );
+    const line = hunk?.lines[effect.anchor.lineIndex];
+    if (line === undefined || line.kind === "metadata") {
+      this.setNotice("Nothing to comment on here.");
+      this.host.requestRender();
+      return;
+    }
+    const scopeLabel = this.scopeLabelForSource(this.state.selectedSourceId);
+    void this.composeComment(effect.existingBody)
+      .then((body) => {
+        if (this.disposed || body === undefined || body.trim() === "") return;
+        this.dispatch({
+          type: "add-comment",
+          comment: buildComment({
+            file: effect.file,
+            anchor: effect.anchor,
+            body: body.trim(),
+            scopeLabel,
+            now: Date.now(),
+          }),
+        });
+      })
+      .catch((error: unknown) => {
+        if (this.disposed) return;
+        this.setNotice(errorNotice(error));
+        this.host.requestRender();
+      });
   }
 
   private startCommitLoad(source: Extract<SourceListItem, { kind: "commit" }>): void {
@@ -1052,6 +1132,27 @@ export class SourceControlView extends VStack {
 
   private applyRefresh(review: DiffReview, recentCommits: SourceListItem[]): void {
     const previousSourceId = this.state.selectedSourceId;
+    const previousReviews = [
+      this.primaryReview,
+      ...this.commitCache.values(),
+    ];
+    const currentReviews = [
+      review,
+      ...previousReviews.filter((candidate) => {
+        if (candidate.scope.kind !== "commit") return false;
+        const commitOid = candidate.scope.commitOid;
+        return recentCommits.some(
+          (source) =>
+            source.kind === "commit" && source.commitOid === commitOid,
+        );
+      }),
+    ];
+    const previousFingerprints = new Map(
+      this.state.comments.map((comment) => [
+        comment.id,
+        this.fingerprintForComment(comment, previousReviews),
+      ]),
+    );
     this.primaryReview = review;
     this.recentCommits = recentCommits;
     this.sources = sourcesFor(review, recentCommits);
@@ -1079,6 +1180,16 @@ export class SourceControlView extends VStack {
         currentFingerprints.has(fingerprint),
       ),
     );
+    const comments = this.state.comments.filter((comment) => {
+      const previousFingerprint = previousFingerprints.get(comment.id);
+      const currentFingerprint = this.fingerprintForComment(
+        comment,
+        currentReviews,
+      );
+      return previousFingerprint !== undefined &&
+        previousFingerprint === currentFingerprint;
+    });
+    const droppedComments = this.state.comments.length - comments.length;
     const cursorByFile = new Map(this.state.cursorByFile);
     if (selectedFile !== undefined) {
       const anchors = this.lineAnchors(selectedFile);
@@ -1098,8 +1209,11 @@ export class SourceControlView extends VStack {
       fileScrollOffset: 0,
       reviewedFingerprints,
       cursorByFile,
+      comments,
       pendingSourceId: undefined,
-      notice: undefined,
+      notice: droppedComments === 0
+        ? undefined
+        : `${droppedComments} ${droppedComments === 1 ? "comment" : "comments"} dropped after refresh.`,
       version: this.state.version + 1,
     };
     this.syncFullscreenScrollOffsets();
@@ -1112,6 +1226,30 @@ export class SourceControlView extends VStack {
         this.primaryReview,
       );
     }
+  }
+
+  private scopeLabelForSource(sourceId: string): string {
+    const source = this.sourceById(sourceId);
+    if (source?.kind === "working") return "working tree";
+    if (source?.kind === "staged") return "staged changes";
+    return describeScope(this.reviewForSource(sourceId));
+  }
+
+  private fingerprintForComment(
+    comment: ReviewComment,
+    reviews: DiffReview[],
+  ): string | undefined {
+    for (const review of reviews) {
+      for (const group of review.groups) {
+        const scopeLabel = review.scope.kind === "workspace"
+          ? group.id === "staged" ? "staged changes" : "working tree"
+          : describeScope(review);
+        if (scopeLabel !== comment.scopeLabel) continue;
+        const file = group.files.find((candidate) => candidate.id === comment.fileId);
+        if (file !== undefined) return file.patchFingerprint;
+      }
+    }
+    return undefined;
   }
 
   private setNotice(notice: string): void {

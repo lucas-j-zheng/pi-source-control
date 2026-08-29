@@ -121,6 +121,8 @@ function view(options: {
   host?: FakeHost;
   data?: ViewDataSource;
   styler?: Styler;
+  composeComment?: (prefill: string | undefined) => Promise<string | undefined>;
+  submitReview?: (message: string) => void;
   onClose?: () => void;
 } = {}): SourceControlView {
   return new SourceControlView({
@@ -128,6 +130,8 @@ function view(options: {
     host: options.host ?? new FakeHost(),
     styler: options.styler ?? plainStyler,
     initialSourceId: "working",
+    composeComment: options.composeComment ?? (async () => undefined),
+    submitReview: options.submitReview ?? (() => undefined),
     onClose: options.onClose ?? (() => undefined),
   });
 }
