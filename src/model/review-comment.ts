@@ -1,4 +1,5 @@
 import type { ChangedFile, DiffLine, DiffReview } from "./diff.ts";
+import { buildReviewPlan, renderPlan } from "./review-plan.ts";
 import type { LineAnchor } from "./review-state.ts";
 
 export interface ReviewComment {
@@ -136,5 +137,6 @@ export function buildReviewMessage(comments: ReviewComment[]): string {
     return `${index + 1}. ${comment.filePath}:${locationLine(comment)} (${disposition(comment)})${scopeSuffix}\n${context}\n\n${body}`;
   });
 
-  return `${header}\n\n${entries.join("\n\n")}`;
+  const message = `${header}\n\n${entries.join("\n\n")}`;
+  return message + renderPlan(buildReviewPlan(ordered));
 }

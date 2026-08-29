@@ -197,7 +197,14 @@ describe("review comments", () => {
         "2. z.ts:-9 (removed)\n" +
         "     -gone\n\n" +
         "   Keep this behavior.\n" +
-        "   It is still required.",
+        "   It is still required.\n\n" +
+        "Suggested plan — 2 independent units, one per file:\n\n" +
+        "  Unit 1: a.ts  (comment 1)\n" +
+        "  Unit 2: z.ts  (comment 2)\n\n" +
+        "Units touch disjoint files and may be worked in parallel, one worker per unit.\n" +
+        "Do not split a unit across workers: comments in a unit edit the same file.\n" +
+        "Merge units into one worker if the changes turn out to be coupled — for example a\n" +
+        "rename whose call sites live in another unit's file.",
     );
   });
 
@@ -216,5 +223,28 @@ describe("review comments", () => {
     expect(result).toContain("Review of multiple sources — 2 comments from /diff.");
     expect(result).toContain("[staged changes]");
     expect(result).toContain("[commit abcdef0 (Fix it)]");
+  });
+
+  it("buildReviewMessage appends the plan when comments span multiple files", () => {
+    const result = buildReviewMessage([
+      comment({ id: "z", fileId: "z", filePath: "z.ts" }),
+      comment({ id: "a", fileId: "a", filePath: "a.ts" }),
+    ]);
+
+    expect(result).toContain(
+      "\n\nSuggested plan — 2 independent units, one per file:\n\n" +
+        "  Unit 1: a.ts  (comment 1)\n" +
+        "  Unit 2: z.ts  (comment 2)",
+    );
+  });
+
+  it("buildReviewMessage omits the plan for a single-file review", () => {
+    const result = buildReviewMessage([
+      comment({ id: "later", newLineNumber: 30 }),
+      comment({ id: "earlier", newLineNumber: 10 }),
+    ]);
+
+    expect(result).not.toContain("Suggested plan");
+    expect(result).not.toContain("Unit 1:");
   });
 });
