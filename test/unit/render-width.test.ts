@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseUnifiedDiff } from "../../src/diff/unified-parser.ts";
 import type { DiffReview } from "../../src/model/diff.ts";
+import type { ReviewComment } from "../../src/model/review-comment.ts";
 import { SourceControlView } from "../../src/ui/source-control-view.ts";
 import { plainStyler } from "../../src/ui/theme.ts";
 
@@ -32,8 +33,8 @@ class Host {
   }
 }
 
-function makeView(height: number): SourceControlView {
-  return new SourceControlView({
+function makeView(height: number, withComments = false): SourceControlView {
+  const subject = new SourceControlView({
     data: {
       initialReview: review,
       recentCommits: [],
@@ -51,6 +52,25 @@ function makeView(height: number): SourceControlView {
     submitReview: () => undefined,
     onClose() {},
   });
+  const file = files[0];
+  if (withComments && file !== undefined) {
+    const comment: ReviewComment = {
+      id: `${file.id}:0:0`,
+      fileId: file.id,
+      filePath: file.newPath,
+      anchor: { hunkIndex: 0, lineIndex: 0 },
+      oldLineNumber: 1,
+      newLineNumber: 1,
+      lineKind: "context",
+      lineText: "# Project",
+      contextText: " # Project",
+      scopeLabel: "working tree",
+      body: "A long inline review comment that wraps safely at every terminal width. ".repeat(4),
+      createdAt: 1,
+    };
+    subject.dispatch({ type: "add-comment", comment });
+  }
+  return subject;
 }
 
 function expectFits(lines: string[], width: number): void {
@@ -63,7 +83,7 @@ describe("source control render width", () => {
   it("every rendered line fits at all widths and heights", () => {
     for (const width of [50, 60, 89, 90, 110, 129, 130, 160, 220]) {
       for (const height of [8, 10, 16, 24, 40, 60]) {
-        const subject = makeView(height);
+        const subject = makeView(height, true);
         expectFits(subject.render(width), width);
         subject.dispatch({ type: "focus-diff" });
         subject.dispatch({ type: "end" });

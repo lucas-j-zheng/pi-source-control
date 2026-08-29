@@ -10,7 +10,9 @@ import {
   sliceColumns,
 } from "../../src/diff/line-slicing.ts";
 import { parseUnifiedDiff } from "../../src/diff/unified-parser.ts";
-import type { ChangedFile } from "../../src/model/diff.ts";
+import type { ChangedFile, DiffReview } from "../../src/model/diff.ts";
+import type { ReviewComment } from "../../src/model/review-comment.ts";
+import { SourceControlView } from "../../src/ui/source-control-view.ts";
 import { plainStyler, type Styler } from "../../src/ui/theme.ts";
 import {
   buildUnifiedRows,
@@ -39,6 +41,57 @@ function render(file: ChangedFile, verticalOffset = 0, height = 8): string[] {
     60,
     plainStyler,
   );
+}
+
+function comment(
+  file: ChangedFile,
+  overrides: Partial<ReviewComment> = {},
+): ReviewComment {
+  return {
+    id: `${file.id}:0:0`,
+    fileId: file.id,
+    filePath: file.newPath,
+    anchor: { hunkIndex: 0, lineIndex: 0 },
+    oldLineNumber: 10,
+    newLineNumber: 10,
+    lineKind: "context",
+    lineText: "const userId = getUserId();",
+    contextText: " const userId = getUserId();",
+    scopeLabel: "working tree",
+    body: "Please check this line.",
+    createdAt: 1,
+    ...overrides,
+  };
+}
+
+function viewFor(file: ChangedFile, height = 10): SourceControlView {
+  const review: DiffReview = {
+    repositoryRoot: "/repo",
+    scope: { kind: "workspace" },
+    groups: [
+      { id: "working", title: "Working Tree", files: [file] },
+      { id: "staged", title: "Staged Changes", files: [] },
+    ],
+    generatedAt: 0,
+  };
+  return new SourceControlView({
+    data: {
+      initialReview: review,
+      recentCommits: [],
+      async loadCommit() {
+        return review;
+      },
+      async refresh() {
+        return { review, recentCommits: [] };
+      },
+    },
+    host: { requestRender: () => undefined, rows: () => height },
+    styler: plainStyler,
+    initialSourceId: "working",
+    composeComment: async () => undefined,
+    submitReview: () => undefined,
+    onClose: () => undefined,
+  });
 }
 
 describe("unified renderer", () => {
@@ -143,6 +196,158 @@ describe("unified renderer", () => {
     expect(rows[3]?.anchor).toBeUndefined();
     expect(rows[4]?.anchor).toEqual({ hunkIndex: 0, lineIndex: 1 });
     expect(rows[5]?.anchor).toBeUndefined();
+  });
+
+  it("a comment renders directly beneath its anchored line", () => {
+    const file = modifiedFile();
+    const rows = buildUnifiedRows(
+      file,
+      plainStyler,
+      40,
+      0,
+      undefined,
+      true,
+      [comment(file)],
+    );
+    const anchoredRow = rows.findIndex((row) =>
+      row.anchor?.hunkIndex === 0 && row.anchor.lineIndex === 0
+    );
+
+    expect(rows[anchoredRow + 1]).toMatchObject({
+      isComment: true,
+      hunkIndex: 0,
+      isHunkHeader: false,
+    });
+    expect(rows[anchoredRow + 1]?.text.slice(11).trimEnd()).toBe(
+      "│ 💬 Please check this line.",
+    );
+  });
+
+  it("a long comment body wraps within the code width", () => {
+    const file = modifiedFile();
+    const rows = buildUnifiedRows(
+      file,
+      plainStyler,
+      20,
+      0,
+      undefined,
+      true,
+      [comment(file, { body: "abcdefghijklmnopqrstuvwxyz0123456789" })],
+    );
+    const commentRows = rows.filter((row) => row.isComment === true);
+
+    expect(commentRows).toHaveLength(3);
+    expect(commentRows.map((row) => row.text.slice(11).trimEnd())).toEqual([
+      "│ 💬 abcdefghijklmno",
+      "│    pqrstuvwxyz0123",
+      "│    456789",
+    ]);
+    for (const row of commentRows) expect(visibleWidth(row.text)).toBe(31);
+  });
+
+  it("two comments on one line render in creation order", () => {
+    const file = modifiedFile();
+    const rows = buildUnifiedRows(
+      file,
+      plainStyler,
+      40,
+      0,
+      undefined,
+      true,
+      [
+        comment(file, { id: "later", body: "later", createdAt: 20 }),
+        comment(file, { id: "earlier", body: "earlier", createdAt: 10 }),
+      ],
+    );
+
+    expect(
+      rows.filter((row) => row.isComment).map((row) => row.text.trimEnd()),
+    ).toEqual([
+      "           │ 💬 earlier",
+      "           │ 💬 later",
+    ]);
+  });
+
+  it("comment rows are not anchorable and the cursor skips them", () => {
+    const file = modifiedFile();
+    const queued = comment(file);
+    const rows = buildUnifiedRows(
+      file,
+      plainStyler,
+      40,
+      0,
+      undefined,
+      true,
+      [queued],
+    );
+    expect(rows.filter((row) => row.isComment).every((row) =>
+      row.anchor === undefined
+    )).toBe(true);
+
+    const subject = viewFor(file);
+    subject.dispatch({ type: "add-comment", comment: queued });
+    subject.dispatch({ type: "focus-diff" });
+    subject.dispatch({ type: "move", delta: 1 });
+    expect(subject.getState().cursorByFile.get(file.id)).toEqual({
+      hunkIndex: 0,
+      lineIndex: 1,
+    });
+  });
+
+  it("rowForAnchor accounts for comment rows above the cursor", () => {
+    const file = modifiedFile();
+    const subject = viewFor(file);
+    subject.render(60);
+    subject.dispatch({
+      type: "add-comment",
+      comment: comment(file, { body: "x".repeat(100) }),
+    });
+    subject.dispatch({ type: "focus-diff" });
+    subject.dispatch({ type: "move", delta: 4 });
+
+    expect(subject.getState().cursorByFile.get(file.id)).toEqual({
+      hunkIndex: 0,
+      lineIndex: 4,
+    });
+    expect(subject.getState().verticalOffsetByFile.get(file.id)).toBe(4);
+  });
+
+  it("no comments produces identical output to before", () => {
+    const file = modifiedFile();
+    const input = {
+      file,
+      verticalOffset: 0,
+      horizontalOffset: 0,
+      height: 8,
+    };
+
+    expect(renderUnifiedDiff(input, 60, plainStyler, [])).toEqual(
+      renderUnifiedDiff(input, 60, plainStyler),
+    );
+    expect(buildUnifiedRows(file, plainStyler, 49, 0, undefined, true, []))
+      .toEqual(buildUnifiedRows(file, plainStyler, 49, 0));
+  });
+
+  it("comment rows are width-safe at every test width", () => {
+    const ansiStyler: Styler = {
+      fg: (_role, text) => `\u001b[32m${text}\u001b[0m`,
+      bg: (_role, text) => `\u001b[48;5;236m${text}\u001b[0m`,
+      bold: (text) => `\u001b[1m${text}\u001b[0m`,
+    };
+    const file = modifiedFile();
+    const queued = comment(file, {
+      body: "A long comment with ANSI \u001b[31mcolored text\u001b[0m that must wrap safely. ".repeat(4),
+    });
+
+    for (const width of [50, 60, 89, 90, 110, 129, 130, 160, 220]) {
+      const lines = renderUnifiedDiff(
+        { file, verticalOffset: 0, horizontalOffset: 0, height: 20 },
+        width,
+        ansiStyler,
+        [queued],
+      );
+      for (const line of lines) expect(visibleWidth(line)).toBe(width);
+    }
   });
 
   it("cursor rendering is width-safe at every test width", () => {

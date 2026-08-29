@@ -397,6 +397,64 @@ describe("review state", () => {
     expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
   });
 
+  it("diff row count includes comment rows so scrolling clamps correctly", () => {
+    const file: ChangedFile = {
+      ...changedFile("working", 0),
+      hunks: [
+        {
+          index: 0,
+          header: "@@ -1,8 +1,8 @@",
+          oldStart: 1,
+          oldCount: 8,
+          newStart: 1,
+          newCount: 8,
+          lines: Array.from({ length: 8 }, (_, index) => ({
+            kind: "context" as const,
+            content: `line ${index + 1}`,
+            oldLineNumber: index + 1,
+            newLineNumber: index + 1,
+          })),
+        },
+      ],
+    };
+    const review = {
+      repositoryRoot: "/repo",
+      scope: { kind: "workspace" as const },
+      groups: [
+        { id: "working" as const, title: "Working Tree", files: [file] },
+        { id: "staged" as const, title: "Staged Changes", files: [] },
+      ],
+      generatedAt: 0,
+    };
+    const subject = new SourceControlView({
+      data: {
+        initialReview: review,
+        recentCommits: [],
+        async loadCommit() {
+          return review;
+        },
+        async refresh() {
+          return { review, recentCommits: [] };
+        },
+      },
+      host: { requestRender: () => undefined, rows: () => 10 },
+      styler: plainStyler,
+      initialSourceId: "working",
+      composeComment: async () => undefined,
+      submitReview: () => undefined,
+      onClose: () => undefined,
+    });
+    subject.render(60);
+    subject.dispatch({
+      type: "add-comment",
+      comment: reviewComment({ body: "x".repeat(100) }),
+    });
+    subject.dispatch({ type: "focus-diff" });
+    subject.dispatch({ type: "scroll-view", delta: 100 });
+
+    expect(subject.getState().verticalOffsetByFile.get(file.id)).toBe(7);
+  });
+
   it("scroll-view is a no-op on the source and file lists", () => {
     const env = fakeEnv();
     let sourceState = createInitialState("working", env);

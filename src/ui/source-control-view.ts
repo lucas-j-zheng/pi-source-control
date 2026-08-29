@@ -638,9 +638,10 @@ export class SourceControlView extends VStack {
           : this.state.cursorByFile.get(selectedFile.id),
       focused: this.state.focusedPane === "diff",
     };
+    const comments = this.commentsForFile(selectedFile);
     return this.state.viewMode === "side-by-side"
-      ? renderSideBySide(input, width, this.styler)
-      : renderUnifiedDiff(input, width, this.styler);
+      ? renderSideBySide(input, width, this.styler, comments)
+      : renderUnifiedDiff(input, width, this.styler, comments);
   }
 
   private renderFullscreenDiff(width: number): string[] {
@@ -656,6 +657,7 @@ export class SourceControlView extends VStack {
       this.state.horizontalOffsetByFile.get(selectedFile!.id) ?? 0;
     const cursor = this.state.cursorByFile.get(selectedFile!.id);
     const focused = this.state.focusedPane === "diff";
+    const comments = this.commentsForFile(selectedFile);
     if (this.state.viewMode === "side-by-side") {
       const height = sideBySideFits(width)
         ? buildSideBySideRows(
@@ -665,6 +667,7 @@ export class SourceControlView extends VStack {
             horizontalOffset,
             cursor,
             focused,
+            comments,
           ).length
         : 1;
       return renderSideBySide(
@@ -678,6 +681,7 @@ export class SourceControlView extends VStack {
         },
         width,
         this.styler,
+        comments,
       );
     }
 
@@ -688,6 +692,7 @@ export class SourceControlView extends VStack {
       horizontalOffset,
       cursor,
       focused,
+      comments,
     ).length;
     return renderUnifiedDiff(
       {
@@ -700,6 +705,7 @@ export class SourceControlView extends VStack {
       },
       width,
       this.styler,
+      comments,
     );
   }
 
@@ -810,12 +816,18 @@ export class SourceControlView extends VStack {
               this.styler,
               this.diffWidth(layout),
               this.state.horizontalOffsetByFile.get(file.id) ?? 0,
+              undefined,
+              true,
+              this.commentsForFile(file),
             ).length
           : buildUnifiedRows(
               file,
               this.styler,
               Math.max(0, this.diffWidth(layout) - UNIFIED_GUTTER_WIDTH),
               this.state.horizontalOffsetByFile.get(file.id) ?? 0,
+              undefined,
+              true,
+              this.commentsForFile(file),
             ).length,
       hunkRows: (file, mode) =>
         mode === "side-by-side"
@@ -850,6 +862,9 @@ export class SourceControlView extends VStack {
         this.styler,
         this.diffWidth(layout),
         horizontalOffset,
+        undefined,
+        true,
+        this.commentsForFile(file),
       ).findIndex((row) =>
         row.anchors?.some((candidate) => anchorEquals(candidate, anchor)) ??
         anchorEquals(row.anchor, anchor)
@@ -860,7 +875,21 @@ export class SourceControlView extends VStack {
       this.styler,
       Math.max(0, this.diffWidth(layout) - UNIFIED_GUTTER_WIDTH),
       horizontalOffset,
+      undefined,
+      true,
+      this.commentsForFile(file),
     ).findIndex((row) => anchorEquals(row.anchor, anchor));
+  }
+
+  private commentsForFile(
+    file: ChangedFile | undefined,
+  ): readonly ReviewComment[] {
+    if (file === undefined) return [];
+    const scopeLabel = this.scopeLabelForSource(this.state.selectedSourceId);
+    return this.state.comments.filter(
+      (comment) =>
+        comment.fileId === file.id && comment.scopeLabel === scopeLabel,
+    );
   }
 
   private diffWidth(layout: Layout): number {

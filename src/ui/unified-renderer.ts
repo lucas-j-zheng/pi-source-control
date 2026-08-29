@@ -1,3 +1,5 @@
+import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
+
 import type {
   ChangedFile,
   DiffLine,
@@ -7,6 +9,7 @@ import {
   anchorEquals,
   type LineAnchor,
 } from "../model/review-state.ts";
+import type { ReviewComment } from "../model/review-comment.ts";
 import {
   expandTabs,
   padToWidth,
@@ -21,6 +24,7 @@ export interface UnifiedRow {
   text: string;
   hunkIndex: number;
   isHunkHeader: boolean;
+  isComment?: boolean;
   anchor?: LineAnchor;
 }
 
@@ -41,10 +45,12 @@ export function buildUnifiedRows(
   horizontalOffset: number,
   cursor?: LineAnchor,
   focused = true,
+  comments: readonly ReviewComment[] = [],
 ): UnifiedRow[] {
   const safeCodeWidth = Math.max(0, Math.trunc(codeWidth));
   const safeHorizontalOffset = Math.max(0, Math.trunc(horizontalOffset));
   const blankGutter = " ".repeat(UNIFIED_GUTTER_WIDTH);
+  const commentsByAnchor = groupCommentsByAnchor(file.id, comments);
   const rows: UnifiedRow[] = [
     {
       text: styler.fg(
@@ -90,6 +96,24 @@ export function buildUnifiedRows(
         ...(anchor === undefined ? {} : { anchor }),
       });
 
+      if (anchor !== undefined) {
+        const anchoredComments = commentsByAnchor.get(anchorKey(anchor)) ?? [];
+        for (const comment of anchoredComments) {
+          for (const commentText of buildCommentCodeRows(
+            comment.body,
+            safeCodeWidth,
+            styler,
+          )) {
+            rows.push({
+              text: blankGutter + commentText,
+              hunkIndex: hunk.index,
+              isHunkHeader: false,
+              isComment: true,
+            });
+          }
+        }
+      }
+
       if (line.noNewlineAtEnd === true) {
         const marker = sliceCode(
           NO_NEWLINE_MARKER,
@@ -112,6 +136,7 @@ export function renderUnifiedDiff(
   input: UnifiedViewInput,
   width: number,
   styler: Styler,
+  comments: readonly ReviewComment[] = [],
 ): string[] {
   const safeWidth = Math.max(0, Math.trunc(width));
   const safeHeight = Math.max(0, Math.trunc(input.height));
@@ -130,6 +155,7 @@ export function renderUnifiedDiff(
     input.horizontalOffset,
     input.cursor,
     input.focused,
+    comments,
   );
   const maximumOffset = Math.max(0, rows.length - safeHeight);
   const verticalOffset = Math.min(
@@ -141,6 +167,27 @@ export function renderUnifiedDiff(
   return Array.from({ length: safeHeight }, (_, row) =>
     padToWidth(visibleRows[row]?.text ?? "", safeWidth),
   );
+}
+
+export function buildCommentCodeRows(
+  body: string,
+  codeWidth: number,
+  styler: Styler,
+): string[] {
+  const safeCodeWidth = Math.max(0, Math.trunc(codeWidth));
+  const firstPrefixWidth = visibleWidth("│ 💬 ");
+  const bodyWidth = Math.max(0, safeCodeWidth - firstPrefixWidth);
+  const wrapped = wrapCommentBody(body, bodyWidth);
+
+  return wrapped.map((line, index) => {
+    const prefix = index === 0
+      ? styler.fg("accent", "│") + " " + styler.fg("accent", "💬") + " "
+      : styler.fg("accent", "│") + "    ";
+    const text = prefix + styler.fg("muted", line);
+    return safeCodeWidth >= firstPrefixWidth
+      ? text
+      : padToWidth(text, safeCodeWidth);
+  });
 }
 
 export function hunkStartRows(file: ChangedFile): number[] {
@@ -189,6 +236,51 @@ function renderDiffLine(
   const role = roleFor(line.kind);
 
   return gutter + styler.fg(role, marker + code);
+}
+
+function groupCommentsByAnchor(
+  fileId: string,
+  comments: readonly ReviewComment[],
+): Map<string, ReviewComment[]> {
+  const grouped = new Map<string, ReviewComment[]>();
+  for (const comment of comments) {
+    if (comment.fileId !== fileId) continue;
+    const key = anchorKey(comment.anchor);
+    const anchored = grouped.get(key) ?? [];
+    anchored.push(comment);
+    grouped.set(key, anchored);
+  }
+  for (const anchored of grouped.values()) {
+    anchored.sort((left, right) => left.createdAt - right.createdAt);
+  }
+  return grouped;
+}
+
+function anchorKey(anchor: LineAnchor): string {
+  return `${anchor.hunkIndex}:${anchor.lineIndex}`;
+}
+
+function wrapCommentBody(body: string, width: number): string[] {
+  if (width <= 0) return [""];
+
+  return body.split(/\r\n|\r|\n/u).flatMap((line) => {
+    const expanded = expandTabs(line);
+    const lineWidth = visibleWidth(expanded);
+    if (lineWidth === 0) return [" ".repeat(width)];
+    const rows: string[] = [];
+    let start = 0;
+    while (start < lineWidth) {
+      const sliced = sliceByColumn(expanded, start, width, true);
+      const slicedWidth = visibleWidth(sliced);
+      if (slicedWidth === 0) {
+        start += 1;
+        continue;
+      }
+      rows.push(sliceColumns(sliced, 0, width));
+      start += slicedWidth;
+    }
+    return rows.length === 0 ? [" ".repeat(width)] : rows;
+  });
 }
 
 function sliceCode(text: string, horizontalOffset: number, width: number): string {
