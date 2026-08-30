@@ -212,6 +212,48 @@ describe("diff command", () => {
     expect(openedView(subject).getState().selectedSourceId).toBe("range");
   });
 
+  it("the review message reaches the prompt only after the view has closed", async () => {
+    // Pi restores the prompt text it snapshotted when the view opened, so setting
+    // it while the view is still up would be wiped by the close.
+    const subject = harness();
+    const setEditorText = vi.fn<DiffCommandDeps["setEditorText"]>();
+    const order: string[] = [];
+    setEditorText.mockImplementation(() => order.push("setEditorText"));
+
+    const openView = vi.fn<DiffCommandDeps["openView"]>(async (factory) => {
+      const view = factory(
+        { requestRender: () => undefined, rows: () => 24 },
+        plainStyler,
+        () => order.push("closed"),
+      );
+      view.dispatch({
+        type: "add-comment",
+        comment: {
+          id: "working:src/a.ts:0:0",
+          fileId: "working:src/a.ts",
+          filePath: "src/a.ts",
+          anchor: { hunkIndex: 0, lineIndex: 0 },
+          lineKind: "context",
+          lineText: "",
+          contextText: "",
+          scopeLabel: "working tree",
+          body: "Please rename this.",
+          createdAt: 1,
+        },
+      });
+      view.dispatch({ type: "submit-comments" });
+      expect(setEditorText).not.toHaveBeenCalled();
+    });
+
+    await runDiffCommand(
+      "",
+      subject.deps({ openView, setEditorText }),
+    );
+
+    expect(order).toEqual(["closed", "setEditorText"]);
+    expect(setEditorText.mock.calls[0]?.[0]).toContain("Please rename this.");
+  });
+
   it("git errors are surfaced through notify as the user-facing message", async () => {
     const subject = harness((args) =>
       args[0] === "status"

@@ -166,6 +166,9 @@ export async function runDiffCommand(
     await detectRepositoryRoot(runner);
     const loaded = await loadInitialReview(runner, request, deps.signal);
     const data = createDataSource(runner, request, loaded);
+    // Pi snapshots the prompt text when the custom view opens and restores it on
+    // close, so the review message has to be set after the view has gone.
+    let reviewMessage: string | undefined;
     await deps.openView(
       (host, styler, done) =>
         new SourceControlView({
@@ -173,10 +176,13 @@ export async function runDiffCommand(
           host,
           styler,
           initialSourceId: loaded.initialSourceId,
-          submitReview: (message) => deps.setEditorText(message),
+          submitReview: (message) => {
+            reviewMessage = message;
+          },
           onClose: done,
         }),
     );
+    if (reviewMessage !== undefined) deps.setEditorText(reviewMessage);
   } catch (error) {
     deps.notify(userMessageForError(error), "error");
   }
