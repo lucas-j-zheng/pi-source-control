@@ -61,3 +61,69 @@ export function renderBuffer(buffer: EditorBuffer, width: number): string[]; // 
 
 ## Done when
 `pnpm check` exits 0 with 12 new tests passing and all existing tests passing or updated only for the removed `editor` dependency.
+
+## Fixes
+
+The spec above is implemented and `pnpm check` passes (276 tests). Do **only** the two fixes
+below. Do not restructure, rename, or re-implement anything else; do not touch any file not
+listed here.
+
+### Fix 1 — remove the deep import into pi-tui's build output
+
+`src/ui/line-editor.ts:4` currently imports from a path inside the package's build output:
+
+```ts
+import { decodePrintableKey } from "@earendil-works/pi-tui/dist/keys.js";
+```
+
+That resolves today only because the installed pi-tui has no `exports` map, and `package.json`
+declares pi-tui as a peer dependency at `"*"`, so a future version that adds an `exports` map or
+renames `dist/` breaks this at runtime rather than at install time.
+
+- Delete that import. Import only from the package root `@earendil-works/pi-tui`
+  (`decodeKittyPrintable`, `matchesKey`, `visibleWidth`).
+- Add a module-private `decodeModifyOtherKeys(data: string): string | undefined` to
+  `src/ui/line-editor.ts` that decodes the xterm modifyOtherKeys form `CSI 27 ; <mod> ; <code> ~`
+  (that is, `\x1b[27;<mod>;<code>~`): accept modifier `1` (none) and `2` (shift) and return
+  `String.fromCodePoint(code)`; return `undefined` for every other modifier (ctrl, alt, meta and
+  combinations) and for any string that does not match the form exactly.
+- In `applyKey`, the printable fallback becomes
+  `decodeKittyPrintable(data) ?? decodeModifyOtherKeys(data) ?? plainPrintable(data)`.
+- Behavior must be unchanged from today: `\x1b[27;2;65~` inserts `A`, `\x1b[27;1;97~` inserts `a`,
+  `\x1b[27;5;97~` (ctrl) inserts nothing. Control code points (below 0x20, and 0x7f) must not be
+  inserted even if a sequence names one.
+
+### Fix 2 — keep the composer on screen when the terminal is resized
+
+`followComposer` in `src/model/review-state.ts` runs on `compose-comment` and on each
+`composing-key`, so the composer follows the buffer as it grows. But `SourceControlView.render`
+recomputes the layout independently: shrinking the terminal while composing leaves the editor
+below the viewport until the next keystroke.
+
+- In `src/ui/source-control-view.ts`, re-apply the existing composer follow when the layout used
+  for rendering differs from the previously rendered layout (`this.lastLayout`) and
+  `state.composing` is set. Reuse the existing `composerRows` / follow machinery — do not
+  duplicate the clamping logic in the view.
+- The correction must happen before the frame is produced, so the resized frame itself already
+  shows the composer; it must not recurse, and it must not invalidate the render cache on every
+  frame when the layout is unchanged.
+
+### Tests
+
+`test/unit/line-editor.test.ts` (the file defines an `ESC` constant; follow that convention and
+write no raw control characters into the source)
+- "modifyOtherKeys printables are decoded without a deep package import"
+  — `\x1b[27;2;65~` inserts `A`, `\x1b[27;1;97~` inserts `a`, `\x1b[27;5;97~` leaves the buffer
+  unchanged.
+- "malformed modifyOtherKeys sequences are ignored" — `\x1b[27;2~`, `\x1b[27;2;65` (no
+  terminator) and `\x1b[27;2;9~` (a tab code point) each leave the buffer unchanged.
+
+`test/unit/source-control-view.test.ts`
+- "the composer stays on screen when the terminal shrinks mid-draft" — compose at the bottom of a
+  long file at a tall height, then render at a shorter height; the rendered frame contains the
+  composer's own hint row (`Alt+Enter newline`), not merely the footer banner.
+
+### Done when
+
+`pnpm check` exits 0 with 3 new tests passing, all 276 existing tests still passing, and
+`grep -r "pi-tui/dist" src/` returning nothing.

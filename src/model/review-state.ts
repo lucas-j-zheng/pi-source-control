@@ -1,9 +1,15 @@
 import type { ChangedFile, SourceListItem } from "./diff.ts";
 import {
+  buildComment,
   buildReviewMessage,
   type ReviewComment,
 } from "./review-comment.ts";
 import type { Layout } from "../ui/layout.ts";
+import {
+  applyKey,
+  createBuffer,
+  type EditorBuffer,
+} from "../ui/line-editor.ts";
 
 export type FocusedPane = "sources" | "files" | "diff";
 
@@ -23,6 +29,13 @@ export function anchorEquals(
       a.lineIndex === b.lineIndex);
 }
 
+export interface ComposingComment {
+  fileId: string;
+  anchor: LineAnchor;
+  buffer: EditorBuffer;
+  existingId?: string;
+}
+
 export interface ReviewSessionState {
   focusedPane: FocusedPane;
   selectedSourceId: string;
@@ -38,6 +51,7 @@ export interface ReviewSessionState {
   selectedHunkByFile: Map<string, number>;
   cursorByFile: Map<string, LineAnchor>;
   comments: ReviewComment[];
+  composing?: ComposingComment;
   pendingSourceId?: string;
   helpVisible: boolean;
   notice?: string;
@@ -62,6 +76,9 @@ export type UiAction =
   | { type: "toggle-view" }
   | { type: "toggle-reviewed" }
   | { type: "compose-comment" }
+  | { type: "composing-key"; data: string }
+  | { type: "follow-composer" }
+  | { type: "cancel-compose" }
   | { type: "add-comment"; comment: ReviewComment }
   | { type: "delete-comment" }
   | { type: "submit-comments" }
@@ -96,18 +113,29 @@ export interface ReviewEnv {
     anchor: LineAnchor,
     mode: "unified" | "side-by-side",
   ): number;
+  scopeLabel?(): string;
+  composerRows?(input: {
+    file: ChangedFile;
+    composing: ComposingComment;
+    mode: "unified" | "side-by-side";
+  }): ComposerRows | undefined;
+  createComment?(input: {
+    file: ChangedFile;
+    anchor: LineAnchor;
+    body: string;
+  }): ReviewComment;
+}
+
+export interface ComposerRows {
+  anchorRow: number;
+  lastRow: number;
+  rowCount: number;
 }
 
 export type ReviewEffect =
   | { type: "close" }
   | { type: "refresh" }
   | { type: "load-source"; sourceId: string }
-  | {
-      type: "compose-comment";
-      file: ChangedFile;
-      anchor: LineAnchor;
-      existingBody?: string;
-    }
   | { type: "submit-review"; message: string };
 
 export interface ReduceResult {
@@ -159,6 +187,7 @@ function finish(
       state.selectedHunkByFile === original.selectedHunkByFile &&
       state.cursorByFile === original.cursorByFile &&
       state.comments === original.comments &&
+      state.composing === original.composing &&
       state.pendingSourceId === original.pendingSourceId &&
       state.helpVisible === original.helpVisible &&
       state.notice === original.notice)
@@ -410,6 +439,31 @@ function setCursorAndFollow(
   return { ...state, cursorByFile, verticalOffsetByFile };
 }
 
+// The composer occupies rows the cursor never lands on, so following the anchor
+// is not enough: the viewport has to reach the editor's last row, which is the
+// hint line under the typed text.
+function followComposer(
+  state: ReviewSessionState,
+  env: ReviewEnv,
+): ReviewSessionState {
+  const composing = state.composing;
+  if (composing === undefined) return state;
+  const file = env.fileById(composing.fileId);
+  if (file === undefined) return state;
+  const rows = env.composerRows?.({ file, composing, mode: state.viewMode });
+  if (rows === undefined || rows.anchorRow < 0) return state;
+
+  const currentOffset = state.verticalOffsetByFile.get(file.id) ?? 0;
+  const height = env.layout.bodyHeight;
+  const anchored = keepVisible(rows.anchorRow, currentOffset, rows.rowCount, height);
+  const offset = keepVisible(rows.lastRow, anchored, rows.rowCount, height);
+  if (offset === currentOffset) return state;
+
+  const verticalOffsetByFile = new Map(state.verticalOffsetByFile);
+  verticalOffsetByFile.set(file.id, offset);
+  return { ...state, verticalOffsetByFile };
+}
+
 function moveDiffCursor(
   state: ReviewSessionState,
   delta: number,
@@ -544,6 +598,60 @@ function moveHunk(
   return selectedHunkByFile === moved.selectedHunkByFile
     ? moved
     : { ...moved, selectedHunkByFile };
+}
+
+function currentScopeLabel(env: ReviewEnv): string {
+  return env.scopeLabel?.() ?? "";
+}
+
+// A file id repeats across scopes — every commit group builds ids the same way —
+// so a comment is only the same comment when its scope matches too.
+function commentTargets(
+  comment: ReviewComment,
+  scopeLabel: string,
+  fileId: string,
+  anchor: LineAnchor,
+): boolean {
+  return (
+    comment.scopeLabel === scopeLabel &&
+    comment.fileId === fileId &&
+    anchorEquals(comment.anchor, anchor)
+  );
+}
+
+function sameTarget(left: ReviewComment, right: ReviewComment): boolean {
+  return commentTargets(left, right.scopeLabel, right.fileId, right.anchor);
+}
+
+function commentAt(
+  comments: readonly ReviewComment[],
+  scopeLabel: string,
+  fileId: string,
+  anchor: LineAnchor,
+): ReviewComment | undefined {
+  return comments.find((comment) =>
+    commentTargets(comment, scopeLabel, fileId, anchor)
+  );
+}
+
+// The view supplies createComment so a comment carries the scope it was written
+// against; the fallback keeps the reducer usable with a bare environment. An
+// anchor that no longer exists is the one expected failure, so it is checked
+// here rather than caught — anything else thrown is a bug, not a notice.
+function commentFor(
+  env: ReviewEnv,
+  file: ChangedFile,
+  anchor: LineAnchor,
+  body: string,
+): ReviewComment | undefined {
+  const anchored = env
+    .lineAnchors(file)
+    .some((candidate) => anchorEquals(candidate, anchor));
+  if (!anchored) return undefined;
+  return (
+    env.createComment?.({ file, anchor, body }) ??
+    buildComment({ file, anchor, body, scopeLabel: "", now: Date.now() })
+  );
 }
 
 export function createInitialState(
@@ -792,18 +900,78 @@ export function reduce(
         };
         break;
       }
-      const id = `${file.id}:${anchor.hunkIndex}:${anchor.lineIndex}`;
-      const existingBody = working.comments.find(
-        (comment) => comment.id === id,
-      )?.body;
-      effects = [existingBody === undefined
-        ? { type: "compose-comment", file, anchor }
-        : { type: "compose-comment", file, anchor, existingBody }];
+      const existing = commentAt(
+        working.comments,
+        currentScopeLabel(env),
+        file.id,
+        anchor,
+      );
+      next = followComposer(
+        {
+          ...working,
+          composing: {
+            fileId: file.id,
+            anchor,
+            buffer: createBuffer(existing?.body),
+            ...(existing === undefined ? {} : { existingId: existing.id }),
+          },
+        },
+        env,
+      );
       break;
     }
+    case "composing-key": {
+      const composing = working.composing;
+      if (composing === undefined) break;
+      const result = applyKey(composing.buffer, action.data);
+      if (result.done === undefined) {
+        next = followComposer(
+          { ...working, composing: { ...composing, buffer: result.buffer } },
+          env,
+        );
+        break;
+      }
+
+      const body = result.done === "submit" ? result.buffer.text.trim() : "";
+      if (body === "") {
+        next = { ...working, composing: undefined };
+        break;
+      }
+
+      const file = env.fileById(composing.fileId);
+      const comment = file === undefined
+        ? undefined
+        : commentFor(env, file, composing.anchor, body);
+      if (comment === undefined) {
+        // The typed text is the only copy of the draft, so it is kept until the
+        // reviewer discards it themselves.
+        next = {
+          ...working,
+          composing: { ...composing, buffer: result.buffer },
+          notice: "That line is gone; the draft is kept. Esc discards it.",
+        };
+        break;
+      }
+      const comments = [...working.comments];
+      const existingIndex = comments.findIndex((candidate) =>
+        sameTarget(candidate, comment)
+      );
+      if (existingIndex < 0) comments.push(comment);
+      else comments[existingIndex] = comment;
+      next = { ...working, composing: undefined, comments };
+      break;
+    }
+    case "follow-composer":
+      next = followComposer(working, env);
+      break;
+    case "cancel-compose":
+      if (working.composing !== undefined) {
+        next = { ...working, composing: undefined };
+      }
+      break;
     case "add-comment": {
-      const existingIndex = working.comments.findIndex(
-        (comment) => comment.id === action.comment.id,
+      const existingIndex = working.comments.findIndex((comment) =>
+        sameTarget(comment, action.comment)
       );
       const comments = [...working.comments];
       if (existingIndex < 0) comments.push(action.comment);
@@ -817,8 +985,10 @@ export function reduce(
         ? undefined
         : working.cursorByFile.get(file.id);
       if (file === undefined || anchor === undefined) break;
-      const id = `${file.id}:${anchor.hunkIndex}:${anchor.lineIndex}`;
-      const comments = working.comments.filter((comment) => comment.id !== id);
+      const scopeLabel = currentScopeLabel(env);
+      const comments = working.comments.filter(
+        (comment) => !commentTargets(comment, scopeLabel, file.id, anchor),
+      );
       if (comments.length !== working.comments.length) {
         next = { ...working, comments };
       }

@@ -4,7 +4,12 @@ import {
   padToWidth,
   sliceColumns,
 } from "../diff/line-slicing.ts";
-import type { ChangedFile, DiffCell, DiffHunk } from "../model/diff.ts";
+import type {
+  ChangedFile,
+  DiffCell,
+  DiffHunk,
+  DiffLine,
+} from "../model/diff.ts";
 import type { ReviewComment } from "../model/review-comment.ts";
 import {
   anchorEquals,
@@ -14,7 +19,9 @@ import { MIN_SBS_CODE_WIDTH, SBS_GUTTER_WIDTH } from "./layout.ts";
 import type { FgRole, Styler } from "./theme.ts";
 import {
   buildCommentCodeRows,
+  buildComposerCodeRows,
   placeholderFor,
+  type ComposingEditor,
 } from "./unified-renderer.ts";
 
 export const SBS_WIDTH_NOTICE = "Side-by-side requires a wider terminal";
@@ -50,6 +57,7 @@ export function buildSideBySideRows(
   cursor?: LineAnchor,
   focused = true,
   comments: readonly ReviewComment[] = [],
+  composing?: ComposingEditor,
 ): SbsRow[] {
   const safeWidth = Math.max(0, Math.trunc(width));
   const safeHorizontalOffset = Math.max(0, Math.trunc(horizontalOffset));
@@ -128,24 +136,15 @@ export function buildSideBySideRows(
         : { anchor: cursorAnchor ?? anchors[0], anchors }),
     });
 
-    const anchoredComments = anchors
-      .flatMap((anchor) => commentsByAnchor.get(anchorKey(anchor)) ?? [])
-      .sort((left, right) => left.createdAt - right.createdAt);
-    for (const comment of anchoredComments) {
-      const commentOnLeft = comment.lineKind === "deletion";
-      const commentWidth = commentOnLeft ? leftWidth : rightWidth;
-      const commentRows = buildCommentCodeRows(
-        comment.body,
-        Math.max(0, commentWidth - SBS_GUTTER_WIDTH),
-        styler,
-      );
-      for (const commentText of commentRows) {
+    const pushCommentRows = (onLeft: boolean, texts: string[]): void => {
+      const commentWidth = onLeft ? leftWidth : rightWidth;
+      for (const commentText of texts) {
         const commentColumn = padToWidth(
           " ".repeat(Math.min(SBS_GUTTER_WIDTH, commentWidth)) + commentText,
           commentWidth,
         );
         rows.push({
-          text: commentOnLeft
+          text: onLeft
             ? joinColumns(commentColumn, " ".repeat(rightWidth), divider)
             : joinColumns(" ".repeat(leftWidth), commentColumn, divider),
           hunkIndex: alignedRow.hunkIndex,
@@ -153,6 +152,38 @@ export function buildSideBySideRows(
           isComment: true,
         });
       }
+    };
+
+    const anchoredComments = anchors
+      .flatMap((anchor) => commentsByAnchor.get(anchorKey(anchor)) ?? [])
+      .sort((left, right) => left.createdAt - right.createdAt);
+    for (const comment of anchoredComments) {
+      if (comment.id === composing?.existingId) continue;
+      const commentOnLeft = comment.lineKind === "deletion";
+      pushCommentRows(
+        commentOnLeft,
+        buildCommentCodeRows(
+          comment.body,
+          Math.max(0, (commentOnLeft ? leftWidth : rightWidth) - SBS_GUTTER_WIDTH),
+          styler,
+        ),
+      );
+    }
+
+    if (
+      composing !== undefined &&
+      anchors.some((anchor) => anchorEquals(anchor, composing.anchor))
+    ) {
+      const composerOnLeft =
+        lineForAnchor(file, composing.anchor)?.kind === "deletion";
+      pushCommentRows(
+        composerOnLeft,
+        buildComposerCodeRows(
+          composing.buffer,
+          Math.max(0, (composerOnLeft ? leftWidth : rightWidth) - SBS_GUTTER_WIDTH),
+          styler,
+        ),
+      );
     }
   }
 
@@ -164,6 +195,7 @@ export function renderSideBySide(
   width: number,
   styler: Styler,
   comments: readonly ReviewComment[] = [],
+  composing?: ComposingEditor,
 ): string[] {
   const safeWidth = Math.max(0, Math.trunc(width));
   const safeHeight = Math.max(0, Math.trunc(input.height));
@@ -192,6 +224,7 @@ export function renderSideBySide(
     input.cursor,
     input.focused,
     comments,
+    composing,
   );
   const maximumOffset = Math.max(0, rows.length - safeHeight);
   const verticalOffset = Math.min(
@@ -222,6 +255,16 @@ function groupCommentsByAnchor(
 
 function anchorKey(anchor: LineAnchor): string {
   return `${anchor.hunkIndex}:${anchor.lineIndex}`;
+}
+
+function lineForAnchor(
+  file: ChangedFile,
+  anchor: LineAnchor,
+): DiffLine | undefined {
+  const hunk = file.hunks.find(
+    (candidate) => candidate.index === anchor.hunkIndex,
+  );
+  return hunk?.lines[anchor.lineIndex];
 }
 
 function anchorsForHunkRows(hunk: DiffHunk): LineAnchor[][] {

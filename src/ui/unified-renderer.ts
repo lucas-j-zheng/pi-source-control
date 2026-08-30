@@ -10,6 +10,7 @@ import {
   type LineAnchor,
 } from "../model/review-state.ts";
 import type { ReviewComment } from "../model/review-comment.ts";
+import { renderBuffer, type EditorBuffer } from "./line-editor.ts";
 import {
   expandTabs,
   padToWidth,
@@ -19,6 +20,8 @@ import { UNIFIED_GUTTER_WIDTH } from "./layout.ts";
 import type { FgRole, Styler } from "./theme.ts";
 
 const NO_NEWLINE_MARKER = "\\ No newline at end of file";
+const COMMENT_PREFIX = "│ 💬 ";
+const COMPOSE_HINT = "Enter save \u00b7 Esc cancel \u00b7 Alt+Enter newline";
 
 export interface UnifiedRow {
   text: string;
@@ -26,6 +29,12 @@ export interface UnifiedRow {
   isHunkHeader: boolean;
   isComment?: boolean;
   anchor?: LineAnchor;
+}
+
+export interface ComposingEditor {
+  anchor: LineAnchor;
+  buffer: EditorBuffer;
+  existingId?: string;
 }
 
 export interface UnifiedViewInput {
@@ -46,6 +55,7 @@ export function buildUnifiedRows(
   cursor?: LineAnchor,
   focused = true,
   comments: readonly ReviewComment[] = [],
+  composing?: ComposingEditor,
 ): UnifiedRow[] {
   const safeCodeWidth = Math.max(0, Math.trunc(codeWidth));
   const safeHorizontalOffset = Math.max(0, Math.trunc(horizontalOffset));
@@ -99,6 +109,7 @@ export function buildUnifiedRows(
       if (anchor !== undefined) {
         const anchoredComments = commentsByAnchor.get(anchorKey(anchor)) ?? [];
         for (const comment of anchoredComments) {
+          if (comment.id === composing?.existingId) continue;
           for (const commentText of buildCommentCodeRows(
             comment.body,
             safeCodeWidth,
@@ -106,6 +117,21 @@ export function buildUnifiedRows(
           )) {
             rows.push({
               text: blankGutter + commentText,
+              hunkIndex: hunk.index,
+              isHunkHeader: false,
+              isComment: true,
+            });
+          }
+        }
+
+        if (composing !== undefined && anchorEquals(anchor, composing.anchor)) {
+          for (const composerText of buildComposerCodeRows(
+            composing.buffer,
+            safeCodeWidth,
+            styler,
+          )) {
+            rows.push({
+              text: blankGutter + composerText,
               hunkIndex: hunk.index,
               isHunkHeader: false,
               isComment: true,
@@ -137,6 +163,7 @@ export function renderUnifiedDiff(
   width: number,
   styler: Styler,
   comments: readonly ReviewComment[] = [],
+  composing?: ComposingEditor,
 ): string[] {
   const safeWidth = Math.max(0, Math.trunc(width));
   const safeHeight = Math.max(0, Math.trunc(input.height));
@@ -156,6 +183,7 @@ export function renderUnifiedDiff(
     input.cursor,
     input.focused,
     comments,
+    composing,
   );
   const maximumOffset = Math.max(0, rows.length - safeHeight);
   const verticalOffset = Math.min(
@@ -175,19 +203,43 @@ export function buildCommentCodeRows(
   styler: Styler,
 ): string[] {
   const safeCodeWidth = Math.max(0, Math.trunc(codeWidth));
-  const firstPrefixWidth = visibleWidth("│ 💬 ");
+  const firstPrefixWidth = visibleWidth(COMMENT_PREFIX);
   const bodyWidth = Math.max(0, safeCodeWidth - firstPrefixWidth);
   const wrapped = wrapCommentBody(body, bodyWidth);
 
   return wrapped.map((line, index) => {
-    const prefix = index === 0
-      ? styler.fg("accent", "│") + " " + styler.fg("accent", "💬") + " "
-      : styler.fg("accent", "│") + "    ";
-    const text = prefix + styler.fg("muted", line);
+    const text = commentPrefix(index === 0, styler) + styler.fg("muted", line);
     return safeCodeWidth >= firstPrefixWidth
       ? text
       : padToWidth(text, safeCodeWidth);
   });
+}
+
+function commentPrefix(first: boolean, styler: Styler): string {
+  return first
+    ? styler.fg("accent", "│") + " " + styler.fg("accent", "💬") + " "
+    : styler.fg("accent", "│") + "    ";
+}
+
+export function buildComposerCodeRows(
+  buffer: EditorBuffer,
+  codeWidth: number,
+  styler: Styler,
+): string[] {
+  const safeCodeWidth = Math.max(0, Math.trunc(codeWidth));
+  const prefixWidth = visibleWidth(COMMENT_PREFIX);
+  const bodyWidth = Math.max(1, safeCodeWidth - prefixWidth);
+  const lines = renderBuffer(buffer, bodyWidth, styler);
+
+  return [
+    ...lines.map((line, index) =>
+      commentPrefix(index === 0, styler) + line
+    ),
+    commentPrefix(false, styler) +
+      styler.fg("dim", sliceColumns(COMPOSE_HINT, 0, bodyWidth)),
+  ].map((row) =>
+    safeCodeWidth >= prefixWidth ? row : padToWidth(row, safeCodeWidth)
+  );
 }
 
 export function hunkStartRows(file: ChangedFile): number[] {

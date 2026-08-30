@@ -65,6 +65,36 @@ function commitReview(commitOid = "a".repeat(40)): DiffReview {
   };
 }
 
+function commitReviewOf(commitOid: string, patch: string): DiffReview {
+  return {
+    ...commitReview(commitOid),
+    groups: [
+      {
+        id: "commit",
+        title: "FILES CHANGED",
+        files: parseUnifiedDiff(patch, { group: "commit" }),
+      },
+    ],
+  };
+}
+
+function longFile(): ChangedFile[] {
+  const body = Array.from({ length: 30 }, (_, index) => ` line ${index + 1}`);
+  return parseUnifiedDiff(
+    [
+      "diff --git a/src/long.ts b/src/long.ts",
+      "index 4444444..5555555 100644",
+      "--- a/src/long.ts",
+      "+++ b/src/long.ts",
+      "@@ -1,30 +1,31 @@",
+      ...body,
+      "+line 31",
+      "",
+    ].join("\n"),
+    { group: "working" },
+  );
+}
+
 function commitItem(review = commitReview()): SourceListItem {
   if (review.scope.kind !== "commit") throw new Error("expected commit review");
   const metadata = review.metadata;
@@ -121,7 +151,6 @@ function view(options: {
   host?: FakeHost;
   data?: ViewDataSource;
   styler?: Styler;
-  composeComment?: (prefill: string | undefined) => Promise<string | undefined>;
   submitReview?: (message: string) => void;
   onClose?: () => void;
 } = {}): SourceControlView {
@@ -130,7 +159,6 @@ function view(options: {
     host: options.host ?? new FakeHost(),
     styler: options.styler ?? plainStyler,
     initialSourceId: "working",
-    composeComment: options.composeComment ?? (async () => undefined),
     submitReview: options.submitReview ?? (() => undefined),
     onClose: options.onClose ?? (() => undefined),
   });
@@ -276,6 +304,205 @@ describe("source control view", () => {
     subject.handleInput("\u001b");
 
     expect(subject.getState().focusedPane).toBe("files");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("composing routes every key to the buffer instead of the bindings", () => {
+    const onClose = vi.fn();
+    const subject = view({ onClose });
+    subject.render(160);
+    subject.dispatch({ type: "focus-diff" });
+    subject.handleInput("c");
+
+    expect(subject.getState().composing).toBeDefined();
+
+    for (const key of ["q", "j", "\t", "v"]) subject.handleInput(key);
+
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(subject.getState()).toMatchObject({
+      focusedPane: "diff",
+      viewMode: "unified",
+    });
+    expect(subject.getState().composing?.buffer.text).toBe("qjv");
+
+    const composingOutput = subject.render(160).join("\n");
+    expect(composingOutput).toContain("Composing comment");
+    // The composer's own hint row — the footer banner alone would not have it.
+    expect(composingOutput).toContain("Alt+Enter newline");
+
+    subject.handleInput("\r");
+
+    expect(subject.getState().composing).toBeUndefined();
+    expect(subject.getState().comments).toHaveLength(1);
+    expect(subject.getState().comments[0]?.body).toBe("qjv");
+    expect(subject.render(160).join("\n")).toContain("1 comment");
+  });
+
+  it("the composer is on screen when c is pressed on the last line of a long diff", () => {
+    const host = new FakeHost();
+    host.rowCount = 16;
+    const subject = view({
+      host,
+      data: dataSource({ initialReview: workspaceReview(longFile()) }),
+    });
+    subject.render(160);
+    subject.dispatch({ type: "focus-diff" });
+    subject.dispatch({ type: "end" });
+    subject.handleInput("c");
+
+    const output = subject.render(160);
+    expect(output).toHaveLength(16);
+    const body = output.join("\n");
+    expect(body).toContain("line 31");
+    expect(body).toContain("💬");
+    expect(body).toContain("Alt+Enter newline");
+  });
+
+  it("the composer stays on screen when the terminal shrinks mid-draft", () => {
+    const host = new FakeHost();
+    host.rowCount = 40;
+    const subject = view({
+      host,
+      data: dataSource({ initialReview: workspaceReview(longFile()) }),
+    });
+    subject.render(160);
+    subject.dispatch({ type: "focus-diff" });
+    subject.dispatch({ type: "end" });
+    subject.handleInput("c");
+    for (const key of "draft") subject.handleInput(key);
+    subject.render(160);
+
+    host.rowCount = 16;
+    const resizedFrame = subject.render(160).join("\n");
+
+    expect(resizedFrame).toContain("Alt+Enter newline");
+  });
+
+  it("a comment on one commit is untouched by the same file in another commit", async () => {
+    const firstOid = "a".repeat(40);
+    const secondOid = "c".repeat(40);
+    const first = commitReviewOf(firstOid, fixture("added.diff"));
+    const second = commitReviewOf(
+      secondOid,
+      fixture("added.diff").replace("42", "43"),
+    );
+    const subject = view({
+      data: dataSource({
+        recentCommits: [commitItem(first), commitItem(second)],
+        loadCommit: async (commitOid) =>
+          commitOid === firstOid ? first : second,
+      }),
+    });
+    const comment = async (sourceId: string, body: string): Promise<void> => {
+      subject.dispatch({ type: "select-source", sourceId });
+      await vi.waitFor(() =>
+        expect(subject.getState().selectedFileId).toBe("commit:src/new-file.ts"),
+      );
+      subject.dispatch({ type: "focus-diff" });
+      subject.handleInput("c");
+      expect(subject.getState().composing?.buffer.text).toBe("");
+      for (const key of body) subject.handleInput(key);
+      subject.handleInput("\r");
+    };
+
+    await comment(`commit:${firstOid}`, "first");
+    await comment(`commit:${secondOid}`, "second");
+
+    expect(subject.getState().comments.map((entry) => entry.body)).toEqual([
+      "first",
+      "second",
+    ]);
+
+    subject.handleInput("d");
+
+    expect(subject.getState().comments.map((entry) => entry.body)).toEqual([
+      "first",
+    ]);
+  });
+
+  it("a refresh landing mid-compose drops a draft its file no longer matches", async () => {
+    const before = workingFiles();
+    const after = before.map((file, index) =>
+      index === 0
+        ? { ...file, patchFingerprint: `${file.patchFingerprint}-changed` }
+        : file,
+    );
+    let settle = (): void => undefined;
+    const subject = view({
+      data: dataSource({
+        initialReview: workspaceReview(before),
+        refresh: async () =>
+          new Promise((resolve) => {
+            settle = () =>
+              resolve({
+                review: workspaceReview(after),
+                recentCommits: [],
+              });
+          }),
+      }),
+    });
+    subject.render(160);
+    subject.handleInput("g");
+    subject.dispatch({ type: "focus-diff" });
+    subject.handleInput("c");
+    for (const key of "draft") subject.handleInput(key);
+
+    settle();
+
+    await vi.waitFor(() =>
+      expect(subject.getState().composing).toBeUndefined(),
+    );
+    expect(subject.getState().notice).toBe(
+      "Comment draft dropped after refresh.",
+    );
+    expect(subject.getState().comments).toEqual([]);
+  });
+
+  it("a refresh that changes nothing keeps the draft", async () => {
+    const refresh = vi.fn(async () => ({
+      review: workspaceReview(),
+      recentCommits: [],
+    }));
+    const subject = view({ data: dataSource({ refresh }) });
+    subject.render(160);
+    subject.handleInput("g");
+    subject.dispatch({ type: "focus-diff" });
+    subject.handleInput("c");
+    for (const key of "draft") subject.handleInput(key);
+
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(subject.getState().pendingSourceId).toBeUndefined(),
+    );
+
+    expect(subject.getState().composing?.buffer.text).toBe("draft");
+    expect(subject.getState().notice).toBeUndefined();
+  });
+
+  it("a notice while composing is shown next to the composing banner", () => {
+    const subject = view();
+    subject.render(160);
+    subject.dispatch({ type: "focus-diff" });
+    subject.handleInput("c");
+    subject.dispatch({ type: "set-notice", notice: "1 comment dropped after refresh." });
+
+    const output = subject.render(160).join("\n");
+    expect(output).toContain("1 comment dropped after refresh.");
+    expect(output).toContain("Composing comment");
+  });
+
+  it("Esc while composing discards the draft and keeps the reviewer open", () => {
+    const onClose = vi.fn();
+    const subject = view({ onClose });
+    subject.render(160);
+    subject.dispatch({ type: "focus-diff" });
+    subject.handleInput("c");
+    subject.handleInput("x");
+    subject.handleInput("\u001b");
+
+    expect(subject.getState().composing).toBeUndefined();
+    expect(subject.getState().comments).toEqual([]);
     expect(onClose).not.toHaveBeenCalled();
   });
 

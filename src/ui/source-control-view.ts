@@ -19,6 +19,8 @@ import {
   anchorEquals,
   createInitialState,
   reduce,
+  type ComposerRows,
+  type ComposingComment,
   type LineAnchor,
   type ReviewEffect,
   type ReviewEnv,
@@ -52,6 +54,7 @@ import { SyncedScrollView } from "./synced-scroll-view.ts";
 import type { Styler } from "./theme.ts";
 import {
   buildUnifiedRows,
+  type ComposingEditor,
   hunkStartRows,
   placeholderFor,
   renderUnifiedDiff,
@@ -77,7 +80,6 @@ export interface SourceControlViewOptions {
   host: ViewHost;
   styler: Styler;
   initialSourceId: string;
-  composeComment(prefill: string | undefined): Promise<string | undefined>;
   submitReview(message: string): void;
   onClose(): void;
 }
@@ -93,8 +95,26 @@ const WORKSPACE_SOURCES: SourceListItem[] = [
   { kind: "staged", id: "staged", label: "Staged Changes" },
 ];
 
+// The unified and side-by-side row models agree on everything the composer span
+// is measured from, so both are read through this shape.
+interface ComposerRowSpan {
+  isComment?: boolean;
+  anchor?: LineAnchor;
+  anchors?: LineAnchor[];
+}
+
 function filesInReview(review: DiffReview): ChangedFile[] {
   return review.groups.flatMap((group) => group.files);
+}
+
+function editorFor(composing: ComposingComment): ComposingEditor {
+  return {
+    anchor: composing.anchor,
+    buffer: composing.buffer,
+    ...(composing.existingId === undefined
+      ? {}
+      : { existingId: composing.existingId }),
+  };
 }
 
 function errorNotice(error: unknown): string {
@@ -193,7 +213,6 @@ export class SourceControlView extends VStack {
   private readonly data: ViewDataSource;
   private readonly host: ViewHost;
   private readonly styler: Styler;
-  private readonly composeComment: SourceControlViewOptions["composeComment"];
   private readonly submitReview: SourceControlViewOptions["submitReview"];
   private readonly onClose: () => void;
   private primaryReview: DiffReview;
@@ -225,7 +244,6 @@ export class SourceControlView extends VStack {
     this.data = options.data;
     this.host = options.host;
     this.styler = options.styler;
-    this.composeComment = options.composeComment;
     this.submitReview = options.submitReview;
     this.onClose = options.onClose;
     this.primaryReview = options.data.initialReview;
@@ -311,6 +329,13 @@ export class SourceControlView extends VStack {
     const safeWidth = Math.max(0, Math.trunc(width));
     const height = Math.max(0, Math.trunc(this.host.rows()));
     const layout = computeLayout(safeWidth, height);
+    if (
+      this.state.composing !== undefined &&
+      (layout.width !== this.lastLayout.width ||
+        layout.height !== this.lastLayout.height)
+    ) {
+      this.followComposerForLayout(layout);
+    }
     const selectedFile = this.selectedFile();
     const cacheKey = JSON.stringify([
       safeWidth,
@@ -348,6 +373,7 @@ export class SourceControlView extends VStack {
         compact: layout.compactFooter,
         helpVisible: this.state.helpVisible,
         commentCount: this.state.comments.length,
+        composing: this.state.composing !== undefined,
         notice: this.state.notice,
       },
       safeWidth,
@@ -376,6 +402,10 @@ export class SourceControlView extends VStack {
 
   handleInput(data: string): void {
     if (this.disposed) return;
+    if (this.state.composing !== undefined) {
+      this.dispatch({ type: "composing-key", data });
+      return;
+    }
     const layout = this.interactionLayout();
     const action = actionForKey(data, this.state, layout);
     if (action !== undefined) this.dispatch(action);
@@ -410,24 +440,6 @@ export class SourceControlView extends VStack {
 
   getPanes(): FullscreenPanes {
     return this.fullscreenPanes;
-  }
-
-  getCommentEditorTitle(): string {
-    const file = this.selectedFile();
-    const anchor = file === undefined
-      ? undefined
-      : this.state.cursorByFile.get(file.id);
-    const hunk = anchor === undefined
-      ? undefined
-      : file?.hunks.find((candidate) => candidate.index === anchor.hunkIndex);
-    const line = anchor === undefined ? undefined : hunk?.lines[anchor.lineIndex];
-    if (file === undefined || line === undefined || line.kind === "metadata") {
-      return "Review comment";
-    }
-    const lineNumber = line.newLineNumber !== undefined
-      ? String(line.newLineNumber)
-      : `-${line.oldLineNumber ?? 0}`;
-    return `Comment on ${file.newPath}:${lineNumber}`;
   }
 
   rebuildFullscreenTree(width: number): void {
@@ -639,9 +651,10 @@ export class SourceControlView extends VStack {
       focused: this.state.focusedPane === "diff",
     };
     const comments = this.commentsForFile(selectedFile);
+    const composing = this.composingForFile(selectedFile);
     return this.state.viewMode === "side-by-side"
-      ? renderSideBySide(input, width, this.styler, comments)
-      : renderUnifiedDiff(input, width, this.styler, comments);
+      ? renderSideBySide(input, width, this.styler, comments, composing)
+      : renderUnifiedDiff(input, width, this.styler, comments, composing);
   }
 
   private renderFullscreenDiff(width: number): string[] {
@@ -658,6 +671,7 @@ export class SourceControlView extends VStack {
     const cursor = this.state.cursorByFile.get(selectedFile!.id);
     const focused = this.state.focusedPane === "diff";
     const comments = this.commentsForFile(selectedFile);
+    const composing = this.composingForFile(selectedFile);
     if (this.state.viewMode === "side-by-side") {
       const height = sideBySideFits(width)
         ? buildSideBySideRows(
@@ -668,6 +682,7 @@ export class SourceControlView extends VStack {
             cursor,
             focused,
             comments,
+            composing,
           ).length
         : 1;
       return renderSideBySide(
@@ -682,6 +697,7 @@ export class SourceControlView extends VStack {
         width,
         this.styler,
         comments,
+        composing,
       );
     }
 
@@ -693,6 +709,7 @@ export class SourceControlView extends VStack {
       cursor,
       focused,
       comments,
+      composing,
     ).length;
     return renderUnifiedDiff(
       {
@@ -706,6 +723,7 @@ export class SourceControlView extends VStack {
       width,
       this.styler,
       comments,
+      composing,
     );
   }
 
@@ -729,6 +747,7 @@ export class SourceControlView extends VStack {
         compact,
         helpVisible: this.state.helpVisible,
         commentCount: this.state.comments.length,
+        composing: this.state.composing !== undefined,
         notice: this.state.notice,
       },
       width,
@@ -790,6 +809,22 @@ export class SourceControlView extends VStack {
     return computeLayout(this.lastLayout.width, this.host.rows());
   }
 
+  private followComposerForLayout(layout: Layout): void {
+    const followed = reduce(
+      this.state,
+      { type: "follow-composer" },
+      this.environment(layout),
+    ).state;
+    if (followed.verticalOffsetByFile === this.state.verticalOffsetByFile) return;
+
+    this.state = {
+      ...this.state,
+      verticalOffsetByFile: followed.verticalOffsetByFile,
+      version: this.state.version + 1,
+    };
+    this.syncFullscreenScrollOffsets();
+  }
+
   private syncFullscreenScrollOffsets(): void {
     this.fullscreenPanes.sources.setDesiredScrollTop(
       this.state.sourceScrollOffset,
@@ -819,6 +854,7 @@ export class SourceControlView extends VStack {
               undefined,
               true,
               this.commentsForFile(file),
+              this.composingForFile(file),
             ).length
           : buildUnifiedRows(
               file,
@@ -828,6 +864,7 @@ export class SourceControlView extends VStack {
               undefined,
               true,
               this.commentsForFile(file),
+              this.composingForFile(file),
             ).length,
       hunkRows: (file, mode) =>
         mode === "side-by-side"
@@ -836,6 +873,17 @@ export class SourceControlView extends VStack {
       lineAnchors: (file) => this.lineAnchors(file),
       rowForAnchor: (file, anchor, mode) =>
         this.rowForAnchor(file, anchor, mode, layout),
+      scopeLabel: () => this.scopeLabelForSource(this.state.selectedSourceId),
+      composerRows: ({ file, composing, mode }) =>
+        this.composerRows(file, composing, mode, layout),
+      createComment: ({ file, anchor, body }) =>
+        buildComment({
+          file,
+          anchor,
+          body,
+          scopeLabel: this.scopeLabelForSource(this.state.selectedSourceId),
+          now: Date.now(),
+        }),
     };
   }
 
@@ -865,6 +913,7 @@ export class SourceControlView extends VStack {
         undefined,
         true,
         this.commentsForFile(file),
+        this.composingForFile(file),
       ).findIndex((row) =>
         row.anchors?.some((candidate) => anchorEquals(candidate, anchor)) ??
         anchorEquals(row.anchor, anchor)
@@ -878,7 +927,62 @@ export class SourceControlView extends VStack {
       undefined,
       true,
       this.commentsForFile(file),
+      this.composingForFile(file),
     ).findIndex((row) => anchorEquals(row.anchor, anchor));
+  }
+
+  private composingForFile(
+    file: ChangedFile | undefined,
+  ): ComposingEditor | undefined {
+    const composing = this.state.composing;
+    if (file === undefined || composing?.fileId !== file.id) return undefined;
+    return editorFor(composing);
+  }
+
+  // The reducer scrolls the composer into view, and the rows it spans only exist
+  // once the pending editor — which is not yet in this.state — reaches a
+  // renderer, so the span is measured here on the caller's behalf.
+  private composerRows(
+    file: ChangedFile,
+    composing: ComposingComment,
+    mode: ReviewSessionState["viewMode"],
+    layout: Layout,
+  ): ComposerRows | undefined {
+    const editor = editorFor(composing);
+    const horizontalOffset = this.state.horizontalOffsetByFile.get(file.id) ?? 0;
+    const comments = this.commentsForFile(file);
+    const rows: ComposerRowSpan[] = mode === "side-by-side"
+      ? buildSideBySideRows(
+          file,
+          this.styler,
+          this.diffWidth(layout),
+          horizontalOffset,
+          undefined,
+          true,
+          comments,
+          editor,
+        )
+      : buildUnifiedRows(
+          file,
+          this.styler,
+          Math.max(0, this.diffWidth(layout) - UNIFIED_GUTTER_WIDTH),
+          horizontalOffset,
+          undefined,
+          true,
+          comments,
+          editor,
+        );
+    const anchorRow = rows.findIndex((row) =>
+      row.anchors?.some((candidate) => anchorEquals(candidate, composing.anchor)) ??
+      anchorEquals(row.anchor, composing.anchor)
+    );
+    if (anchorRow < 0) return undefined;
+
+    // Comment and composer rows both sit directly under the anchored line, and
+    // the composer is always last, so the run ends on its hint row.
+    let lastRow = anchorRow;
+    while (rows[lastRow + 1]?.isComment === true) lastRow += 1;
+    return { anchorRow, lastRow, rowCount: rows.length };
   }
 
   private commentsForFile(
@@ -984,50 +1088,12 @@ export class SourceControlView extends VStack {
       this.startRefresh();
       return;
     }
-    if (effect.type === "compose-comment") {
-      this.startCommentComposition(effect);
-      return;
-    }
     if (effect.type === "submit-review") {
       this.submitReview(effect.message);
       return;
     }
     const source = this.sourceById(effect.sourceId);
     if (source?.kind === "commit") this.startCommitLoad(source);
-  }
-
-  private startCommentComposition(
-    effect: Extract<ReviewEffect, { type: "compose-comment" }>,
-  ): void {
-    const hunk = effect.file.hunks.find(
-      (candidate) => candidate.index === effect.anchor.hunkIndex,
-    );
-    const line = hunk?.lines[effect.anchor.lineIndex];
-    if (line === undefined || line.kind === "metadata") {
-      this.setNotice("Nothing to comment on here.");
-      this.host.requestRender();
-      return;
-    }
-    const scopeLabel = this.scopeLabelForSource(this.state.selectedSourceId);
-    void this.composeComment(effect.existingBody)
-      .then((body) => {
-        if (this.disposed || body === undefined || body.trim() === "") return;
-        this.dispatch({
-          type: "add-comment",
-          comment: buildComment({
-            file: effect.file,
-            anchor: effect.anchor,
-            body: body.trim(),
-            scopeLabel,
-            now: Date.now(),
-          }),
-        });
-      })
-      .catch((error: unknown) => {
-        if (this.disposed) return;
-        this.setNotice(errorNotice(error));
-        this.host.requestRender();
-      });
   }
 
   private startCommitLoad(source: Extract<SourceListItem, { kind: "commit" }>): void {
@@ -1182,6 +1248,11 @@ export class SourceControlView extends VStack {
         this.fingerprintForComment(comment, previousReviews),
       ]),
     );
+    const composing = this.state.composing;
+    const composingFingerprint =
+      composing === undefined
+        ? undefined
+        : this.fileById(composing.fileId)?.patchFingerprint;
     this.primaryReview = review;
     this.recentCommits = recentCommits;
     this.sources = sourcesFor(review, recentCommits);
@@ -1219,6 +1290,20 @@ export class SourceControlView extends VStack {
         previousFingerprint === currentFingerprint;
     });
     const droppedComments = this.state.comments.length - comments.length;
+    const keptComposing = this.composingAfterRefresh(
+      composing,
+      composingFingerprint,
+      files,
+    );
+    const notices: string[] = [];
+    if (droppedComments > 0) {
+      notices.push(
+        `${droppedComments} ${droppedComments === 1 ? "comment" : "comments"} dropped after refresh.`,
+      );
+    }
+    if (composing !== undefined && keptComposing === undefined) {
+      notices.push("Comment draft dropped after refresh.");
+    }
     const cursorByFile = new Map(this.state.cursorByFile);
     if (selectedFile !== undefined) {
       const anchors = this.lineAnchors(selectedFile);
@@ -1239,13 +1324,32 @@ export class SourceControlView extends VStack {
       reviewedFingerprints,
       cursorByFile,
       comments,
+      composing: keptComposing,
       pendingSourceId: undefined,
-      notice: droppedComments === 0
-        ? undefined
-        : `${droppedComments} ${droppedComments === 1 ? "comment" : "comments"} dropped after refresh.`,
+      notice: notices.length === 0 ? undefined : notices.join(" "),
       version: this.state.version + 1,
     };
     this.syncFullscreenScrollOffsets();
+  }
+
+  // A refresh can move or drop the line a draft is attached to; keeping the
+  // draft would silently re-target it, so it only survives when its file came
+  // back with the same patch and the anchored line is still there.
+  private composingAfterRefresh(
+    composing: ComposingComment | undefined,
+    previousFingerprint: string | undefined,
+    files: ChangedFile[],
+  ): ComposingComment | undefined {
+    if (composing === undefined) return undefined;
+    const file = files.find((candidate) => candidate.id === composing.fileId);
+    if (file === undefined || file.patchFingerprint !== previousFingerprint) {
+      return undefined;
+    }
+    return this.lineAnchors(file).some((anchor) =>
+      anchorEquals(anchor, composing.anchor),
+    )
+      ? composing
+      : undefined;
   }
 
   private seedPrimaryCommit(): void {

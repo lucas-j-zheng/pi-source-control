@@ -14,6 +14,7 @@ import type { ChangedFile, DiffReview } from "../../src/model/diff.ts";
 import type { ReviewComment } from "../../src/model/review-comment.ts";
 import { SourceControlView } from "../../src/ui/source-control-view.ts";
 import { plainStyler, type Styler } from "../../src/ui/theme.ts";
+import { createBuffer } from "../../src/ui/line-editor.ts";
 import {
   buildUnifiedRows,
   hunkStartRows,
@@ -88,7 +89,6 @@ function viewFor(file: ChangedFile, height = 10): SourceControlView {
     host: { requestRender: () => undefined, rows: () => height },
     styler: plainStyler,
     initialSourceId: "working",
-    composeComment: async () => undefined,
     submitReview: () => undefined,
     onClose: () => undefined,
   });
@@ -345,6 +345,79 @@ describe("unified renderer", () => {
         width,
         ansiStyler,
         [queued],
+      );
+      for (const line of lines) expect(visibleWidth(line)).toBe(width);
+    }
+  });
+
+  it("the composer renders beneath the line being commented on", () => {
+    const file = modifiedFile();
+    const rows = buildUnifiedRows(file, plainStyler, 60, 0, undefined, true, [], {
+      anchor: { hunkIndex: 0, lineIndex: 1 },
+      buffer: { text: "needs a test", caret: 12 },
+    });
+    const commented = rows.findIndex((row) =>
+      row.anchor?.lineIndex === 1 && row.anchor.hunkIndex === 0
+    );
+
+    expect(rows[commented + 1]?.isComment).toBe(true);
+    expect(rows[commented + 1]?.text.trimEnd()).toBe(
+      "           │ 💬 needs a test",
+    );
+    expect(rows[commented + 2]?.text.trimEnd()).toBe(
+      "           │    Enter save · Esc cancel · Alt+Enter newline",
+    );
+    expect(rows[commented + 1]?.anchor).toBeUndefined();
+  });
+
+  it("the composer replaces the comment it is editing", () => {
+    const file = modifiedFile();
+    const queued = comment(file, { body: "original" });
+    const rows = buildUnifiedRows(
+      file,
+      plainStyler,
+      40,
+      0,
+      undefined,
+      true,
+      [queued],
+      {
+        anchor: queued.anchor,
+        buffer: createBuffer("original, edited"),
+        existingId: queued.id,
+      },
+    );
+    const commentText = rows
+      .filter((row) => row.isComment)
+      .map((row) => row.text.trimEnd());
+
+    expect(commentText.some((text) => text.includes("original, edited"))).toBe(
+      true,
+    );
+    expect(commentText.some((text) => text.endsWith("💬 original"))).toBe(false);
+  });
+
+  it("composer rows are width-safe at every test width", () => {
+    const ansiStyler: Styler = {
+      fg: (_role, text) => `\u001b[32m${text}\u001b[0m`,
+      bg: (_role, text) => `\u001b[48;5;236m${text}\u001b[0m`,
+      bold: (text) => `\u001b[1m${text}\u001b[0m`,
+    };
+    const file = modifiedFile();
+    const composing = {
+      anchor: { hunkIndex: 0, lineIndex: 0 },
+      buffer: createBuffer(
+        "A composed comment long enough to wrap across several rows. ".repeat(3),
+      ),
+    };
+
+    for (const width of [50, 60, 89, 90, 110, 129, 130, 160, 220]) {
+      const lines = renderUnifiedDiff(
+        { file, verticalOffset: 0, horizontalOffset: 0, height: 20 },
+        width,
+        ansiStyler,
+        [],
+        composing,
       );
       for (const line of lines) expect(visibleWidth(line)).toBe(width);
     }

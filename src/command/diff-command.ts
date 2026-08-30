@@ -140,7 +140,6 @@ export interface DiffCommandDeps {
   cwd: string;
   mode: string;
   notify(msg: string, level: "info" | "warning" | "error"): void;
-  editor(title: string, prefill?: string): Promise<string | undefined>;
   setEditorText(text: string): void;
   openView(
     factory: (
@@ -168,20 +167,15 @@ export async function runDiffCommand(
     const loaded = await loadInitialReview(runner, request, deps.signal);
     const data = createDataSource(runner, request, loaded);
     await deps.openView(
-      (host, styler, done) => {
-        let view: SourceControlView;
-        view = new SourceControlView({
+      (host, styler, done) =>
+        new SourceControlView({
           data,
           host,
           styler,
           initialSourceId: loaded.initialSourceId,
-          composeComment: (prefill) =>
-            deps.editor(view.getCommentEditorTitle(), prefill),
           submitReview: (message) => deps.setEditorText(message),
           onClose: done,
-        });
-        return view;
-      },
+        }),
     );
   } catch (error) {
     deps.notify(userMessageForError(error), "error");

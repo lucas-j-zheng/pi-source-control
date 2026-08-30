@@ -59,6 +59,9 @@ Bare `/diff` starts on the Working Tree source. Direct commit and range forms ar
 | `Shift+↑` / `Shift+↓` | Scroll view |
 | `v` | Toggle between the default unified view and optional side-by-side view when width permits |
 | `Space` | Mark/unmark the selected file as reviewed |
+| `c` | Comment on the cursor line, or edit the comment already there, in an inline editor |
+| `d` | Delete the comment on the cursor line |
+| `Shift+S` | Send every queued comment to the Pi prompt and close |
 | `g` | Refresh Git status, recent commits, and diffs |
 | `?` | Toggle a help overlay or expanded keybinding footer |
 
@@ -81,6 +84,18 @@ then the reviewer is keyboard-only.
 
 Every review opens in unified mode. Side-by-side mode is never selected automatically; press `v` to opt in when the terminal is wide enough for both code columns.
 
+## Review comments
+
+Press `c` on a diff line to open an input box directly beneath it; the reviewer never
+leaves the diff. `Enter` saves, `Esc` discards, and `Alt+Enter` starts a new line.
+While the editor is open every keystroke goes into it, so ordinary bindings such as
+`q` and `j` type their character instead of firing.
+
+Saved comments render as `💬` rows under the line they are anchored to. `c` on a
+commented line reopens that comment for editing, and `d` deletes it. `Shift+S` hands
+the whole queue to Pi as one prompt message and closes the reviewer. Comments live in
+memory for the session only — nothing is written to the repository.
+
 ## Supported Git states
 
 - Modified, added, deleted, renamed, and copied files.
@@ -102,8 +117,6 @@ The extension makes no network or model calls. It does not write review state, c
 - Staging or unstaging files.
 - Reverting files or hunks.
 - Editing files from the reviewer.
-- Inline review comments.
-- Sending comments back to Pi.
 - Agent-turn-specific snapshots.
 - Syntax highlighting.
 - Character-level/intraline highlighting.

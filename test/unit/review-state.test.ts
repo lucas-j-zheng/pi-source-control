@@ -76,6 +76,7 @@ interface EnvOptions {
   unloaded?: Set<string>;
   rowCount?: (file: ChangedFile, mode: ReviewSessionState["viewMode"]) => number;
   customSources?: SourceListItem[];
+  scopeLabel?: string;
 }
 
 const diffAnchors: LineAnchor[] = Array.from(
@@ -122,6 +123,56 @@ function fakeEnv(options: EnvOptions = {}): ReviewEnv {
         ? position + anchor.hunkIndex + 2
         : Math.floor(position / 2) + anchor.hunkIndex + 2;
     },
+    scopeLabel() {
+      return options.scopeLabel ?? "working tree";
+    },
+    composerRows({ file, composing, mode }) {
+      const anchorRow = this.rowForAnchor(file, composing.anchor, mode);
+      if (anchorRow < 0) return undefined;
+      // The fake composer wraps every 10 characters and adds a hint row, so a
+      // growing draft pushes its last row further down the diff.
+      const height = Math.ceil((composing.buffer.text.length + 1) / 10) + 1;
+      return {
+        anchorRow,
+        lastRow: anchorRow + height,
+        rowCount: this.diffRowCount(file, mode) + height,
+      };
+    },
+  };
+}
+
+
+function composedComment(
+  overrides: Partial<ReviewComment> = {},
+): ReviewComment {
+  return {
+    id: "working:file-0:0:0",
+    fileId: "working:file-0",
+    filePath: "working/file-0.ts",
+    anchor: { hunkIndex: 0, lineIndex: 0 },
+    lineKind: "context",
+    lineText: "",
+    contextText: "",
+    scopeLabel: "working tree",
+    body: "",
+    createdAt: 0,
+    ...overrides,
+  };
+}
+
+function composingEnv(scopeLabel = "working tree"): ReviewEnv {
+  return {
+    ...fakeEnv({ scopeLabel }),
+    createComment: ({ file, anchor, body }) =>
+      composedComment({
+        id: `${file.id}:${anchor.hunkIndex}:${anchor.lineIndex}`,
+        fileId: file.id,
+        filePath: file.newPath,
+        anchor,
+        body,
+        scopeLabel,
+        createdAt: 1,
+      }),
   };
 }
 
@@ -440,8 +491,7 @@ describe("review state", () => {
       host: { requestRender: () => undefined, rows: () => 10 },
       styler: plainStyler,
       initialSourceId: "working",
-      composeComment: async () => undefined,
-      submitReview: () => undefined,
+        submitReview: () => undefined,
       onClose: () => undefined,
     });
     subject.render(60);
@@ -664,19 +714,207 @@ describe("review state", () => {
     ).toEqual([{ type: "refresh" }]);
   });
 
-  it("c on a line emits a compose-comment effect for that anchor", () => {
+  it("c enters composing state instead of emitting an effect", () => {
     const env = fakeEnv();
-    const state = createInitialState("working", env);
-    const file = allFiles.get("working")?.[0];
-    if (file === undefined) throw new Error("expected a working file");
+    const result = reduce(
+      createInitialState("working", env),
+      { type: "compose-comment" },
+      env,
+    );
 
-    expect(reduce(state, { type: "compose-comment" }, env).effects).toEqual([
-      {
-        type: "compose-comment",
-        file,
-        anchor: { hunkIndex: 0, lineIndex: 0 },
-      },
+    expect(result.effects).toEqual([]);
+    expect(result.state.composing).toEqual({
+      fileId: "working:file-0",
+      anchor: { hunkIndex: 0, lineIndex: 0 },
+      buffer: { text: "", caret: 0 },
+    });
+  });
+
+  it("keys are routed to the buffer while composing", () => {
+    const env = composingEnv();
+    let state = apply(
+      createInitialState("working", env),
+      { type: "compose-comment" },
+      env,
+    );
+    for (const data of ["h", "i", "!"]) {
+      state = apply(state, { type: "composing-key", data }, env);
+    }
+
+    expect(state.composing?.buffer).toEqual({ text: "hi!", caret: 3 });
+    expect(state.comments).toEqual([]);
+  });
+
+  it("submitting composing text adds the comment and clears composing state", () => {
+    const env = composingEnv();
+    let state = apply(
+      createInitialState("working", env),
+      { type: "compose-comment" },
+      env,
+    );
+    for (const data of ["o", "k"]) {
+      state = apply(state, { type: "composing-key", data }, env);
+    }
+    state = apply(state, { type: "composing-key", data: "\r" }, env);
+
+    expect(state.composing).toBeUndefined();
+    expect(state.comments).toEqual([
+      composedComment({ body: "ok", createdAt: 1 }),
     ]);
+  });
+
+  it("composing on a commented line prefills and replaces that comment", () => {
+    const env = composingEnv();
+    let state = apply(
+      createInitialState("working", env),
+      { type: "add-comment", comment: composedComment({ body: "old" }) },
+      env,
+    );
+    state = apply(state, { type: "compose-comment" }, env);
+
+    expect(state.composing).toMatchObject({
+      buffer: { text: "old", caret: 3 },
+      existingId: "working:file-0:0:0",
+    });
+
+    state = apply(state, { type: "composing-key", data: "!" }, env);
+    state = apply(state, { type: "composing-key", data: "\r" }, env);
+
+    expect(state.comments).toEqual([
+      composedComment({ body: "old!", createdAt: 1 }),
+    ]);
+  });
+
+  it("opening the composer scrolls it into view and follows it as it grows", () => {
+    const env = composingEnv();
+    let state = apply(
+      createInitialState("working", env),
+      { type: "focus-diff" },
+      env,
+    );
+    state = apply(state, { type: "end" }, env);
+    // The last line sits on row 33 of 40, so the viewport already ends there.
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(28);
+
+    state = apply(state, { type: "compose-comment" }, env);
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(30);
+
+    for (const data of "a longer draft") {
+      state = apply(state, { type: "composing-key", data }, env);
+    }
+
+    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(31);
+  });
+
+  it("a comment in another scope never prefills, replaces or deletes this one", () => {
+    const workingScope = composingEnv();
+    const commitScope = composingEnv("commit one (One)");
+    let state = apply(
+      createInitialState("working", workingScope),
+      { type: "compose-comment" },
+      workingScope,
+    );
+    state = apply(state, { type: "composing-key", data: "w" }, workingScope);
+    state = apply(state, { type: "composing-key", data: "\r" }, workingScope);
+
+    state = apply(state, { type: "compose-comment" }, commitScope);
+    expect(state.composing?.buffer).toEqual({ text: "", caret: 0 });
+    expect(state.composing?.existingId).toBeUndefined();
+
+    state = apply(state, { type: "composing-key", data: "c" }, commitScope);
+    state = apply(state, { type: "composing-key", data: "\r" }, commitScope);
+    expect(
+      state.comments.map((comment) => [comment.scopeLabel, comment.body]),
+    ).toEqual([
+      ["working tree", "w"],
+      ["commit one (One)", "c"],
+    ]);
+
+    state = apply(state, { type: "delete-comment" }, commitScope);
+    expect(
+      state.comments.map((comment) => [comment.scopeLabel, comment.body]),
+    ).toEqual([["working tree", "w"]]);
+  });
+
+  it("submitting onto a vanished line keeps the draft and explains why", () => {
+    const env = composingEnv();
+    let state = apply(
+      createInitialState("working", env),
+      { type: "compose-comment" },
+      env,
+    );
+    state = apply(state, { type: "composing-key", data: "x" }, env);
+
+    const goneEnv: ReviewEnv = { ...env, lineAnchors: () => [] };
+    state = apply(state, { type: "composing-key", data: "\r" }, goneEnv);
+
+    expect(state.composing?.buffer).toEqual({ text: "x", caret: 1 });
+    expect(state.comments).toEqual([]);
+    expect(state.notice).toBe(
+      "That line is gone; the draft is kept. Esc discards it.",
+    );
+  });
+
+  it("a failing comment builder is a thrown bug, not a notice", () => {
+    const env: ReviewEnv = {
+      ...composingEnv(),
+      createComment: () => {
+        throw new Error("builder is broken");
+      },
+    };
+    let state = apply(
+      createInitialState("working", env),
+      { type: "compose-comment" },
+      env,
+    );
+    state = apply(state, { type: "composing-key", data: "x" }, env);
+
+    expect(() => apply(state, { type: "composing-key", data: "\r" }, env))
+      .toThrow("builder is broken");
+  });
+
+  it("follow-composer scrolls the composer into view without touching the draft", () => {
+    const env = composingEnv();
+    let state = apply(
+      createInitialState("working", env),
+      { type: "compose-comment" },
+      env,
+    );
+    state = apply(state, { type: "composing-key", data: "draft" }, env);
+    const before = state.composing;
+
+    const followed = apply(state, { type: "follow-composer" }, env);
+
+    expect(followed.composing).toBe(before);
+    expect(followed.comments).toEqual([]);
+  });
+
+  it("cancelling composing adds no comment", () => {
+    const env = composingEnv();
+    let state = apply(
+      createInitialState("working", env),
+      { type: "compose-comment" },
+      env,
+    );
+    state = apply(state, { type: "composing-key", data: "x" }, env);
+    state = apply(state, { type: "composing-key", data: "\u001b" }, env);
+
+    expect(state.composing).toBeUndefined();
+    expect(state.comments).toEqual([]);
+  });
+
+  it("submitting empty composing text adds no comment", () => {
+    const env = composingEnv();
+    let state = apply(
+      createInitialState("working", env),
+      { type: "compose-comment" },
+      env,
+    );
+    state = apply(state, { type: "composing-key", data: "   " }, env);
+    state = apply(state, { type: "composing-key", data: "\r" }, env);
+
+    expect(state.composing).toBeUndefined();
+    expect(state.comments).toEqual([]);
   });
 
   it("add-comment queues a comment and a second comment on the same line replaces it", () => {
@@ -689,10 +927,6 @@ describe("review state", () => {
     state = apply(state, { type: "add-comment", comment: replacement }, env);
 
     expect(state.comments).toEqual([replacement]);
-    expect(reduce(state, { type: "compose-comment" }, env).effects[0]).toMatchObject({
-      type: "compose-comment",
-      existingBody: "Use the safer value.",
-    });
   });
 
   it("c with no anchorable line sets a notice", () => {
@@ -783,8 +1017,7 @@ describe("review state", () => {
       host: { requestRender: () => undefined, rows: () => 24 },
       styler: plainStyler,
       initialSourceId: "working",
-      composeComment: async () => undefined,
-      submitReview: () => undefined,
+        submitReview: () => undefined,
       onClose: () => undefined,
     });
     subject.dispatch({ type: "add-comment", comment: reviewComment() });

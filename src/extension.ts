@@ -14,7 +14,6 @@ export default function register(pi: ExtensionAPI): void {
         cwd: ctx.cwd,
         mode: ctx.mode,
         notify: (message, level) => ctx.ui.notify(message, level),
-        editor: (title, prefill) => ctx.ui.editor(title, prefill),
         setEditorText: (text) => ctx.ui.setEditorText(text),
         openView: async (factory) => {
           await ctx.ui.custom<void>((tui, theme, _keybindings, done) =>

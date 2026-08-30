@@ -48,7 +48,6 @@ function makeView(height: number, withComments = false): SourceControlView {
     host: new Host(height),
     styler: plainStyler,
     initialSourceId: "working",
-    composeComment: async () => undefined,
     submitReview: () => undefined,
     onClose() {},
   });
@@ -92,6 +91,28 @@ describe("source control render width", () => {
         subject.dispatch({ type: "toggle-view" });
         expectFits(subject.render(width), width);
         subject.dispatch({ type: "toggle-help" });
+        expectFits(subject.render(width), width);
+      }
+    }
+  });
+
+  it("the inline composer fits at all widths in both view modes", () => {
+    const draft = "A composed review comment long enough to wrap. ".repeat(3);
+
+    for (const width of [50, 60, 89, 90, 110, 129, 130, 160, 220]) {
+      for (const height of [8, 24, 60]) {
+        const subject = makeView(height, true);
+        subject.render(width);
+        subject.dispatch({ type: "focus-diff" });
+        subject.handleInput("c");
+        for (const character of draft) subject.handleInput(character);
+        expect(subject.getState().composing?.buffer.text).toContain(draft);
+        expectFits(subject.render(width), width);
+
+        subject.dispatch({ type: "composing-key", data: "\u001b" });
+        subject.dispatch({ type: "toggle-view" });
+        subject.handleInput("c");
+        for (const character of draft) subject.handleInput(character);
         expectFits(subject.render(width), width);
       }
     }

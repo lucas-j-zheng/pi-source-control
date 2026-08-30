@@ -105,7 +105,6 @@ function makeView(options: { host?: Host; styler?: Styler } = {}): {
     host,
     styler: options.styler ?? plainStyler,
     initialSourceId: "working",
-    composeComment: async () => undefined,
     submitReview: () => undefined,
     onClose() {},
   });

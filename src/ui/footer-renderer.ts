@@ -9,6 +9,7 @@ export interface FooterInput {
   compact: boolean;
   helpVisible: boolean;
   commentCount?: number;
+  composing?: boolean;
   notice?: string;
 }
 
@@ -52,6 +53,15 @@ export function renderFooter(input: FooterInput, width: number, styler: Styler):
     ? ""
     : `${commentCount} ${commentCount === 1 ? "comment" : "comments"} · S submit`;
   const status = queued === "" ? progress : `${progress} · ${queued}`;
+
+  if (input.composing === true) {
+    const banner = "Composing comment \u2014 Enter save \u00b7 Esc cancel";
+    // The footer stays one row, and a notice is gone on the next keystroke, so
+    // it leads the banner rather than being truncated away behind it.
+    return input.notice === undefined
+      ? [styler.fg("accent", fitLine(banner, width))]
+      : [styler.fg("warning", fitLine(`${input.notice} \u00b7 ${banner}`, width))];
+  }
 
   if (input.helpVisible) {
     return [

@@ -2,8 +2,11 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 
 import type { ChangedFile, DiffHunk, DiffLine } from "../../src/model/diff.ts";
+import { buildComment } from "../../src/model/review-comment.ts";
+import type { LineAnchor } from "../../src/model/review-state.ts";
 import {
   SBS_WIDTH_NOTICE,
+  type SbsRow,
   buildSideBySideRows,
   renderSideBySide,
   sbsHunkStartRows,
@@ -53,9 +56,39 @@ function replacementFile(): ChangedFile {
   ]);
 }
 
+function deletionFile(): ChangedFile {
+  return changedFile([
+    hunk([{ kind: "deletion", content: "old one", oldLineNumber: 4 }]),
+  ]);
+}
+
 function columnWidths(width: number): [number, number] {
   const left = Math.floor((width - 1) / 2);
   return [left, width - left - 1];
+}
+
+function composerRows(
+  file: ChangedFile,
+  anchor: LineAnchor,
+  width: number,
+  body = "needs a test",
+): SbsRow[] {
+  return buildSideBySideRows(file, plainStyler, width, 0, anchor, true, [], {
+    anchor,
+    buffer: { text: body, caret: body.length },
+  });
+}
+
+function commentColumn(
+  rows: SbsRow[],
+  body: string,
+  width: number,
+): "ORIGINAL" | "MODIFIED" | undefined {
+  const [leftWidth] = columnWidths(width);
+  const row = rows.find((candidate) => candidate.text.includes(body));
+  if (row === undefined) return undefined;
+  if (row.text.slice(0, leftWidth).includes(body)) return "ORIGINAL";
+  return row.text.slice(leftWidth + 1).includes(body) ? "MODIFIED" : undefined;
 }
 
 describe("side-by-side renderer", () => {
@@ -158,6 +191,108 @@ describe("side-by-side renderer", () => {
         plainStyler,
       );
       expect(lines[1]?.trimEnd()).toBe(placeholderFor(file));
+    }
+  });
+
+  it("the composer sits in ORIGINAL for a standalone deletion", () => {
+    const width = 100;
+    const anchor = { hunkIndex: 0, lineIndex: 0 };
+    const rows = composerRows(deletionFile(), anchor, width);
+    const composer = rows.findIndex((row) => row.isComment === true);
+
+    expect(commentColumn(rows, "needs a test", width)).toBe("ORIGINAL");
+    expect(rows[composer]?.anchor).toBeUndefined();
+    expect(rows[composer + 1]?.isComment).toBe(true);
+    expect(rows[composer + 1]?.text).toContain("Enter save");
+  });
+
+  it("the composer follows the anchored line on a paired row", () => {
+    const width = 100;
+    const file = replacementFile();
+    const paired = (anchor: LineAnchor): number =>
+      composerRows(file, anchor, width).findIndex(
+        (row) => row.anchors?.length === 2,
+      );
+
+    expect(
+      commentColumn(
+        composerRows(file, { hunkIndex: 0, lineIndex: 0 }, width),
+        "needs a test",
+        width,
+      ),
+    ).toBe("ORIGINAL");
+    expect(
+      commentColumn(
+        composerRows(file, { hunkIndex: 0, lineIndex: 2 }, width),
+        "needs a test",
+        width,
+      ),
+    ).toBe("MODIFIED");
+    expect(paired({ hunkIndex: 0, lineIndex: 0 })).toBe(
+      paired({ hunkIndex: 0, lineIndex: 2 }),
+    );
+  });
+
+  it("the composer sits in MODIFIED for an addition", () => {
+    const width = 100;
+    const rows = composerRows(
+      replacementFile(),
+      { hunkIndex: 0, lineIndex: 4 },
+      width,
+    );
+
+    expect(commentColumn(rows, "needs a test", width)).toBe("MODIFIED");
+  });
+
+  it("the composer and the saved comment share a column", () => {
+    const width = 100;
+    const file = replacementFile();
+
+    for (const lineIndex of [0, 1, 2, 3, 4]) {
+      const anchor = { hunkIndex: 0, lineIndex };
+      const comment = buildComment({
+        file,
+        anchor,
+        body: "needs a test",
+        scopeLabel: "working tree",
+        now: 1,
+      });
+      const saved = buildSideBySideRows(
+        file,
+        plainStyler,
+        width,
+        0,
+        anchor,
+        true,
+        [comment],
+      );
+
+      expect(commentColumn(saved, "needs a test", width)).toBeDefined();
+      expect(commentColumn(composerRows(file, anchor, width), "needs a test", width))
+        .toBe(commentColumn(saved, "needs a test", width));
+    }
+  });
+
+  it("the composer is width-safe in both columns", () => {
+    for (const width of [90, 110, 129, 130, 160, 220]) {
+      for (const lineIndex of [0, 4]) {
+        const anchor = { hunkIndex: 0, lineIndex };
+        const lines = renderSideBySide(
+          {
+            file: replacementFile(),
+            verticalOffset: 0,
+            horizontalOffset: 0,
+            height: 24,
+            cursor: anchor,
+          },
+          width,
+          plainStyler,
+          [],
+          { anchor, buffer: { text: "needs a test", caret: 12 } },
+        );
+
+        for (const line of lines) expect(visibleWidth(line)).toBe(width);
+      }
     }
   });
 

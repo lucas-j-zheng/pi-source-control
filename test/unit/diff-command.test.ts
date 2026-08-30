@@ -95,7 +95,6 @@ function harness(
 ): Harness {
   const calls: ExecCall[] = [];
   const notify = vi.fn<DiffCommandDeps["notify"]>();
-  const editor = vi.fn<DiffCommandDeps["editor"]>(async () => undefined);
   const setEditorText = vi.fn<DiffCommandDeps["setEditorText"]>();
   const openView = vi.fn<DiffCommandDeps["openView"]>(async (factory) => {
     subject.factory = factory;
@@ -114,7 +113,6 @@ function harness(
         cwd: ROOT,
         mode: "tui",
         notify,
-        editor,
         setEditorText,
         openView: subject.openView,
         ...overrides,
