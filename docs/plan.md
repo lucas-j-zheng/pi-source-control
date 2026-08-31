@@ -1575,7 +1575,9 @@ The MVP is complete only when all of the following are true:
 - [ ] Refresh preserves reviewed status only for unchanged patches.
 - [ ] No rendered line exceeds the terminal width.
 - [ ] No Git command used by the extension mutates repository state.
-- [ ] The reviewer performs no network or model calls.
+- [ ] The reviewer itself opens no network connection and calls no model provider directly.
+      (Superseded in part by spec 30: `Shift+S` hands the review to the user's Pi session,
+      which calls their configured model provider. The extension has no endpoint of its own.)
 - [ ] Parser, alignment, layout, and repository integration tests pass.
 
 ---

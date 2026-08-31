@@ -6,7 +6,11 @@ import type {
   DiffReview,
   StatusEntry,
 } from "../model/diff.ts";
-import { runOrThrow, type GitRunner } from "./git-client.ts";
+import {
+  GIT_SAFE_DIFF_FLAGS,
+  runOrThrow,
+  type GitRunner,
+} from "./git-client.ts";
 import {
   parsePorcelainStatus,
   statusForIndex,
@@ -22,7 +26,7 @@ export interface WorkspaceReadOptions {
 export const STAGED_DIFF_ARGS: readonly string[] = [
   "diff",
   "--cached",
-  "--no-ext-diff",
+  ...GIT_SAFE_DIFF_FLAGS,
   "--no-color",
   "--find-renames",
   "--unified=3",
@@ -30,8 +34,12 @@ export const STAGED_DIFF_ARGS: readonly string[] = [
 ];
 
 export const WORKING_DIFF_ARGS: readonly string[] = [
-  "diff",
-  "--no-ext-diff",
+  // `git diff` refreshes and writes stale index stat data even with the global
+  // `--no-optional-locks` flag. `diff-files` is its read-only plumbing
+  // equivalent for comparing the index to the work tree and does not write the
+  // refreshed cache back to `.git/index`.
+  "diff-files",
+  ...GIT_SAFE_DIFF_FLAGS,
   "--no-color",
   "--find-renames",
   "--unified=3",

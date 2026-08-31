@@ -6,6 +6,7 @@ import type {
   FileStatus,
 } from "../model/diff.ts";
 import { fingerprintPatch } from "./patch-fingerprint.ts";
+import { pathKey, sanitizeContent, sanitizeLabel } from "./sanitize.ts";
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
 const NO_NEWLINE_MARKER = "\\ No newline at end of file";
@@ -45,10 +46,10 @@ function parseFileChunk(rawPatch: string, group: DiffGroupId): ChangedFile {
   const headerPaths = parseDiffHeader(firstLine);
   let oldPath = stripSidePrefix(headerPaths.oldPath, "a/");
   let newPath = stripSidePrefix(headerPaths.newPath, "b/");
-  let renameFrom: string | undefined;
-  let renameTo: string | undefined;
-  let copyFrom: string | undefined;
-  let copyTo: string | undefined;
+  let renameFrom: RawPath | undefined;
+  let renameTo: RawPath | undefined;
+  let copyFrom: RawPath | undefined;
+  let copyTo: RawPath | undefined;
   let oldIsNull = false;
   let newIsNull = false;
   let isNewFile = false;
@@ -59,9 +60,9 @@ function parseFileChunk(rawPatch: string, group: DiffGroupId): ChangedFile {
 
   for (const line of lines.slice(1, metadataEnd)) {
     if (line.startsWith("--- ")) {
-      oldIsNull = parseMetadataPath(line.slice(4)) === "/dev/null";
+      oldIsNull = parseMetadataPath(line.slice(4)).text === "/dev/null";
     } else if (line.startsWith("+++ ")) {
-      newIsNull = parseMetadataPath(line.slice(4)) === "/dev/null";
+      newIsNull = parseMetadataPath(line.slice(4)).text === "/dev/null";
     } else if (line.startsWith("rename from ")) {
       renameFrom = parseMetadataPath(line.slice("rename from ".length));
     } else if (line.startsWith("rename to ")) {
@@ -94,14 +95,16 @@ function parseFileChunk(rawPatch: string, group: DiffGroupId): ChangedFile {
   } else if (status === "copied") {
     oldPath = copyFrom ?? oldPath;
     newPath = copyTo ?? newPath;
-  } else if (newPath === "/dev/null") {
+  } else if (newPath.text === "/dev/null") {
     newPath = oldPath;
   }
 
-  const fileForErrors = newPath;
-  const isBinary = lines.some(
-    (line) => line.startsWith("Binary files ") && line.endsWith(" differ"),
-  ) || lines.some((line) => line === "GIT binary patch");
+  // Every path field is a label: it is drawn on one row and is repository-
+  // controlled, so it must not carry escapes or line breaks.
+  const displayPath = sanitizeLabel(newPath.text);
+  const displayOldPath = sanitizeLabel(oldPath.text);
+  const fileForErrors = displayPath;
+  const isBinary = isBinaryPatch(lines);
   const hunks = isBinary ? [] : parseHunks(lines, fileForErrors);
   const additions = hunks.reduce(
     (total, hunk) => total + hunk.lines.filter((line) => line.kind === "addition").length,
@@ -111,16 +114,18 @@ function parseFileChunk(rawPatch: string, group: DiffGroupId): ChangedFile {
     (total, hunk) => total + hunk.lines.filter((line) => line.kind === "deletion").length,
     0,
   );
-  const slash = newPath.lastIndexOf("/");
+  const slash = displayPath.lastIndexOf("/");
 
   return {
-    id: `${group}:${newPath}`,
+    id: `${group}:${pathIdentity(newPath)}`,
     group,
     status,
-    ...(status === "renamed" || status === "copied" ? { oldPath } : {}),
-    newPath,
-    displayName: slash === -1 ? newPath : newPath.slice(slash + 1),
-    displayDirectory: slash === -1 ? "" : newPath.slice(0, slash),
+    ...(status === "renamed" || status === "copied"
+      ? { oldPath: displayOldPath }
+      : {}),
+    newPath: displayPath,
+    displayName: slash === -1 ? displayPath : displayPath.slice(slash + 1),
+    displayDirectory: slash === -1 ? "" : displayPath.slice(0, slash),
     additions,
     deletions,
     isBinary,
@@ -131,11 +136,36 @@ function parseFileChunk(rawPatch: string, group: DiffGroupId): ChangedFile {
   };
 }
 
+/**
+ * Detect git's binary summary without depending on its localized sentence.
+ *
+ * A normal textual patch has `---`/`+++` markers. A binary patch instead has
+ * an `index old..new` header followed by either the stable binary-patch marker
+ * or one localized summary line. Empty-file and mode-only diffs stop at their
+ * structural headers, so requiring payload after `index` avoids classifying
+ * those as binary.
+ */
+function isBinaryPatch(lines: string[]): boolean {
+  if (lines.some((line) => line === "GIT binary patch")) return true;
+  if (
+    lines.some((line) => line.startsWith("--- ")) ||
+    lines.some((line) => line.startsWith("+++ ")) ||
+    lines.some((line) => HUNK_HEADER.test(line))
+  ) {
+    return false;
+  }
+
+  const index = lines.findIndex((line) =>
+    /^index [0-9a-f]+\.\.[0-9a-f]+(?: [0-7]{6})?$/u.test(line)
+  );
+  return index >= 0 && lines.slice(index + 1).some((line) => line !== "");
+}
+
 interface StatusMetadata {
-  renameFrom?: string;
-  renameTo?: string;
-  copyFrom?: string;
-  copyTo?: string;
+  renameFrom?: RawPath;
+  renameTo?: RawPath;
+  copyFrom?: RawPath;
+  copyTo?: RawPath;
   oldIsNull: boolean;
   newIsNull: boolean;
   isNewFile: boolean;
@@ -171,7 +201,7 @@ function parseHunks(lines: string[], file: string): DiffHunk[] {
       const newStart = Number(headerMatch[3]);
       current = {
         index: hunks.length,
-        header: line,
+        header: sanitizeContent(line),
         oldStart,
         oldCount: headerMatch[2] === undefined ? 1 : Number(headerMatch[2]),
         newStart,
@@ -213,7 +243,9 @@ function parseHunkLine(
   nearHunk: string,
 ): { line: DiffLine; oldIncrement: number; newIncrement: number } {
   const marker = source[0];
-  const content = source === "" ? "" : source.slice(1);
+  // The model is sanitized here, at the parse boundary, so every consumer —
+  // renderers, review comments, the agent message — inherits clean text.
+  const content = source === "" ? "" : sanitizeContent(source.slice(1));
 
   if (source === "" || marker === " ") {
     return {
@@ -264,10 +296,50 @@ function splitLines(value: string): string[] {
   return lines;
 }
 
-function parseDiffHeader(line: string): { oldPath: string; newPath: string } {
+/** A path exactly as git named it: the decoded text plus the bytes behind it. */
+interface RawPath {
+  text: string;
+  octets: number[];
+}
+
+const OCTAL_DIGIT = /[0-7]/;
+const NAMED_ESCAPES: Record<string, string> = {
+  '"': '"',
+  "\\": "\\",
+  a: "\u0007",
+  b: "\b",
+  t: "\t",
+  n: "\n",
+  v: "\v",
+  f: "\f",
+  r: "\r",
+};
+
+function rawPathFromText(text: string): RawPath {
+  return { text, octets: Array.from(Buffer.from(text, "utf8")) };
+}
+
+/**
+ * A display path is lossy twice over: invalid UTF-8 collapses to U+FFFD and
+ * sanitization drops escape bytes, so two distinct filenames can share one
+ * display string. Ids fall back to the raw bytes whenever that happens, which
+ * keeps every id unique without churning the readable ids of ordinary paths.
+ */
+function pathIdentity(path: RawPath): string {
+  const safe = sanitizeLabel(path.text);
+  const roundTrips = Buffer.from(path.text, "utf8").equals(
+    Buffer.from(Uint8Array.from(path.octets)),
+  );
+
+  return safe === path.text && roundTrips
+    ? safe
+    : `${safe}#${pathKey(path.octets)}`;
+}
+
+function parseDiffHeader(line: string): { oldPath: RawPath; newPath: RawPath } {
   const prefix = "diff --git ";
   if (!line.startsWith(prefix)) {
-    throw new DiffParseError(`Malformed diff header: ${line}`);
+    throw new DiffParseError(`Malformed diff header: ${sanitizeLabel(line)}`);
   }
 
   const source = line.slice(prefix.length);
@@ -276,13 +348,16 @@ function parseDiffHeader(line: string): { oldPath: string; newPath: string } {
     const separator = separators.find((index) => {
       const oldPath = source.slice(0, index);
       const newPath = source.slice(index + 1);
-      return stripSidePrefix(oldPath, "a/") === stripSidePrefix(newPath, "b/");
+      return (
+        stripSidePrefix(rawPathFromText(oldPath), "a/").text ===
+          stripSidePrefix(rawPathFromText(newPath), "b/").text
+      );
     }) ?? separators[0];
 
     if (separator !== undefined) {
       return {
-        oldPath: source.slice(0, separator),
-        newPath: source.slice(separator + 1),
+        oldPath: rawPathFromText(source.slice(0, separator)),
+        newPath: rawPathFromText(source.slice(separator + 1)),
       };
     }
   }
@@ -290,7 +365,7 @@ function parseDiffHeader(line: string): { oldPath: string; newPath: string } {
   const first = readPathOperand(source, 0);
   const second = readPathOperand(source, first.next);
   if (first.value === undefined || second.value === undefined) {
-    throw new DiffParseError(`Malformed diff header: ${line}`);
+    throw new DiffParseError(`Malformed diff header: ${sanitizeLabel(line)}`);
   }
 
   return { oldPath: first.value, newPath: second.value };
@@ -299,7 +374,7 @@ function parseDiffHeader(line: string): { oldPath: string; newPath: string } {
 function readPathOperand(
   source: string,
   offset: number,
-): { value?: string; next: number } {
+): { value?: RawPath; next: number } {
   let start = offset;
   while (source[start] === " ") start += 1;
   if (start >= source.length) return { next: start };
@@ -307,7 +382,7 @@ function readPathOperand(
   if (source[start] !== '"') {
     const end = source.indexOf(" ", start);
     const next = end === -1 ? source.length : end;
-    return { value: source.slice(start, next), next };
+    return { value: rawPathFromText(source.slice(start, next)), next };
   }
 
   let end = start + 1;
@@ -318,7 +393,7 @@ function readPathOperand(
     }
     if (source[end] === '"') {
       const quoted = source.slice(start, end + 1);
-      return { value: decodeQuotedPath(quoted), next: end + 1 };
+      return { value: decodeQuotedPathBytes(quoted), next: end + 1 };
     }
     end += 1;
   }
@@ -326,67 +401,73 @@ function readPathOperand(
   return { next: source.length };
 }
 
-function parseMetadataPath(value: string): string {
-  return value.startsWith('"') && value.endsWith('"') ? decodeQuotedPath(value) : value;
+function parseMetadataPath(value: string): RawPath {
+  return value.startsWith('"') && value.endsWith('"')
+    ? decodeQuotedPathBytes(value)
+    : rawPathFromText(value);
 }
 
-function decodeQuotedPath(value: string): string {
-  const source = value.slice(1, -1);
-  let result = "";
-  let octets: number[] = [];
+/**
+ * git quotes a path precisely because it is not safe to print, so un-escaping
+ * one without sanitizing hands the terminal back exactly the control bytes git
+ * hid. The decoded text returned here is display-safe; callers that need a
+ * lossless identity use {@link decodeQuotedPathBytes} and `pathKey` instead.
+ */
+export function decodeQuotedPath(value: string): string {
+  return sanitizeLabel(decodeQuotedPathBytes(value).text);
+}
 
-  const flushOctets = (): void => {
-    if (octets.length > 0) {
-      result += Buffer.from(octets).toString("utf8");
-      octets = [];
-    }
+function decodeQuotedPathBytes(value: string): RawPath {
+  const source = value.slice(1, -1);
+  const octets: number[] = [];
+  const pushText = (text: string): void => {
+    for (const byte of Buffer.from(text, "utf8")) octets.push(byte);
   };
 
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    if (char !== "\\") {
-      flushOctets();
-      result += char;
-      continue;
+  let index = 0;
+  while (index < source.length) {
+    const backslash = source.indexOf("\\", index);
+    if (backslash === -1) {
+      pushText(source.slice(index));
+      break;
     }
+    if (backslash > index) pushText(source.slice(index, backslash));
 
-    const escaped = source[index + 1];
+    const escaped = source[backslash + 1];
     if (escaped === undefined) {
-      flushOctets();
-      result += "\\";
+      pushText("\\");
+      index = backslash + 1;
       continue;
     }
 
-    if (/[0-7]/.test(escaped)) {
+    if (OCTAL_DIGIT.test(escaped)) {
       let digits = escaped;
-      while (digits.length < 3 && /[0-7]/.test(source[index + 1 + digits.length] ?? "")) {
-        digits += source[index + 1 + digits.length];
+      while (
+        digits.length < 3 &&
+        OCTAL_DIGIT.test(source[backslash + 1 + digits.length] ?? "")
+      ) {
+        digits += source[backslash + 1 + digits.length];
       }
-      octets.push(Number.parseInt(digits, 8));
-      index += digits.length;
+      octets.push(Number.parseInt(digits, 8) & 0xff);
+      index = backslash + 1 + digits.length;
       continue;
     }
 
-    flushOctets();
-    const escapes: Record<string, string> = {
-      '"': '"',
-      "\\": "\\",
-      a: "\x07",
-      b: "\b",
-      t: "\t",
-      n: "\n",
-      v: "\v",
-      f: "\f",
-      r: "\r",
-    };
-    result += escapes[escaped] ?? escaped;
-    index += 1;
+    pushText(NAMED_ESCAPES[escaped] ?? escaped);
+    index = backslash + 2;
   }
 
-  flushOctets();
-  return result;
+  return {
+    text: Buffer.from(Uint8Array.from(octets)).toString("utf8"),
+    octets,
+  };
 }
 
-function stripSidePrefix(path: string, prefix: "a/" | "b/"): string {
-  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+function stripSidePrefix(path: RawPath, prefix: "a/" | "b/"): RawPath {
+  return path.text.startsWith(prefix)
+    ? {
+      text: path.text.slice(prefix.length),
+      octets: path.octets.slice(prefix.length),
+    }
+    : path;
 }

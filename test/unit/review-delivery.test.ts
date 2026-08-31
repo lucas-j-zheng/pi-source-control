@@ -33,7 +33,7 @@ describe("review delivery", () => {
     expect(subject.sendUserMessage).toHaveBeenCalledWith("Review body");
     expect(subject.setEditorText).not.toHaveBeenCalled();
     expect(subject.notify).toHaveBeenCalledWith(
-      "Review sent — 2 comments",
+      "Review sent to the agent — 2 comments",
       "info",
     );
   });
@@ -44,7 +44,7 @@ describe("review delivery", () => {
     deliverReview("Review body", 1, subject.deps);
 
     expect(subject.notify).toHaveBeenCalledWith(
-      "Review sent — 1 comment",
+      "Review sent to the agent — 1 comment",
       "info",
     );
   });
@@ -90,6 +90,31 @@ describe("review delivery", () => {
         );
       }
     }
+  });
+
+  it("a fire-and-forget send still notifies exactly once", async () => {
+    // Pi's ExtensionAPI.sendUserMessage returns void: AgentSession calls
+    // `this.sendUserMessage(...).catch(...)` internally, so a failure after the
+    // synchronous call can never reach this module. The notice must therefore
+    // claim only that the review was handed over, exactly once.
+    const subject = deps();
+    let internallyCaught: unknown;
+    subject.sendUserMessage.mockImplementation((): void => {
+      Promise.reject(new Error("provider refused")).catch((error: unknown) => {
+        internallyCaught = error;
+      });
+    });
+
+    const outcome = deliverReview("Review body", 2, subject.deps);
+    await Promise.resolve();
+
+    expect(outcome).toBe("sent");
+    expect(subject.notify).toHaveBeenCalledExactlyOnceWith(
+      "Review sent to the agent — 2 comments",
+      "info",
+    );
+    expect(subject.setEditorText).not.toHaveBeenCalled();
+    expect(internallyCaught).toBeInstanceOf(Error);
   });
 
   it("a non-Error throw is still reported with a readable reason", () => {

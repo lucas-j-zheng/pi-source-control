@@ -4,6 +4,7 @@ import type {
   DiffLineKind,
   DiffReview,
 } from "./diff.ts";
+import { sanitizeLabel } from "../diff/sanitize.ts";
 import { buildReviewPlan, renderPlan } from "./review-plan.ts";
 import type { LineAnchor } from "./review-state.ts";
 
@@ -48,14 +49,18 @@ export function describeScope(review: DiffReview): string {
         ? review.metadata
         : undefined;
     const shortOid = metadata?.shortOid ?? review.scope.commitOid.slice(0, 7);
-    return `commit ${shortOid} (${metadata?.subject ?? ""})`;
+    // A commit subject is repository-controlled text that ends up on a row and
+    // inside the message handed to the agent.
+    return sanitizeLabel(`commit ${shortOid} (${metadata?.subject ?? ""})`);
   }
 
   const metadata =
     review.metadata !== undefined && "expression" in review.metadata
       ? review.metadata
       : undefined;
-  return `range ${metadata?.expression ?? review.scope.requestedExpression}`;
+  return sanitizeLabel(
+    `range ${metadata?.expression ?? review.scope.requestedExpression}`,
+  );
 }
 
 export function buildComment(input: {

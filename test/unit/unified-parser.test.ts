@@ -4,10 +4,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { fingerprintPatch } from "../../src/diff/patch-fingerprint.ts";
+import { pathKey } from "../../src/diff/sanitize.ts";
 import {
   DiffParseError,
+  decodeQuotedPath,
   parseUnifiedDiff,
 } from "../../src/diff/unified-parser.ts";
+import { synthesizeUntrackedFile } from "../../src/git/untracked-file.ts";
 
 const fixtureDirectory = fileURLToPath(new URL("../fixtures/", import.meta.url));
 
@@ -158,6 +161,18 @@ describe("parseUnifiedDiff", () => {
     expect(file).toMatchObject({ isBinary: true, hunks: [], additions: 0, deletions: 0 });
   });
 
+  it("detects a localized binary summary structurally", () => {
+    const [file] = parseUnifiedDiff([
+      "diff --git a/image.bin b/image.bin",
+      "index 1111111..2222222 100644",
+      "Binärdateien a/image.bin und b/image.bin sind verschieden",
+      "",
+    ].join("\n"), { group: "working" });
+
+    expect(file?.isBinary).toBe(true);
+    expect(file?.hunks).toEqual([]);
+  });
+
   it("code lines beginning with +++ or --- inside a hunk", () => {
     const patch = [
       "diff --git a/markers.txt b/markers.txt",
@@ -229,5 +244,74 @@ describe("parseUnifiedDiff", () => {
       displayDirectory: "src/api",
     });
     expect(files[1]).toMatchObject({ displayName: "README.md", displayDirectory: "" });
+  });
+});
+
+const ESC_BYTE = "\u001b";
+const BEL_BYTE = "\u0007";
+
+function quotedPatch(escapedName: string): string {
+  return [
+    `diff --git "a/${escapedName}" "b/${escapedName}"`,
+    `--- "a/${escapedName}"`,
+    `+++ "b/${escapedName}"`,
+    "@@ -1 +1 @@",
+    "-old",
+    "+new",
+    "",
+  ].join("\n");
+}
+
+describe("untrusted repository paths and content", () => {
+  it("a filename containing escape bytes is rendered inert", () => {
+    const escapedName = "a\\033]0;pwn\\007b.txt";
+    const [file] = parseUnifiedDiff(quotedPatch(escapedName), {
+      group: "working",
+    });
+
+    expect(decodeQuotedPath(`"a/${escapedName}"`)).toBe("a/ab.txt");
+    expect(file?.newPath).toBe("ab.txt");
+    expect(file?.displayName).toBe("ab.txt");
+    expect(file?.newPath).not.toContain(ESC_BYTE);
+    expect(file?.newPath).not.toContain(BEL_BYTE);
+    expect(file?.id).not.toContain(ESC_BYTE);
+    // The escaped name and a real file called ab.txt are different files.
+    const [plain] = parseUnifiedDiff(quotedPatch("ab.txt"), {
+      group: "working",
+    });
+    expect(plain?.id).toBe("working:ab.txt");
+    expect(file?.id).not.toBe(plain?.id);
+  });
+
+  it("two filenames differing only in invalid UTF-8 bytes get distinct ids", () => {
+    const [first] = parseUnifiedDiff(quotedPatch("\\350b.txt"), {
+      group: "working",
+    });
+    const [second] = parseUnifiedDiff(quotedPatch("\\351b.txt"), {
+      group: "working",
+    });
+
+    // They are indistinguishable once decoded for display...
+    expect(first?.newPath).toBe("�b.txt");
+    expect(second?.newPath).toBe(first?.newPath);
+    // ...so identity has to come from the bytes.
+    expect(first?.id).not.toBe(second?.id);
+    expect(first?.id).toContain(pathKey([0xe8, 0x62, 0x2e, 0x74, 0x78, 0x74]));
+    expect(second?.id).toContain(pathKey([0xe9, 0x62, 0x2e, 0x74, 0x78, 0x74]));
+  });
+
+  it("an untracked CRLF file does not keep its carriage returns", () => {
+    const file = synthesizeUntrackedFile(
+      "notes.txt",
+      "one\r\ntwo\r\nevil();\r// harmless\r\n",
+      "working",
+    );
+
+    expect(file.hunks[0]?.lines.map((line) => line.content)).toEqual([
+      "one",
+      "two",
+      "evil();�// harmless",
+    ]);
+    expect(file.rawPatch).not.toContain("\r");
   });
 });

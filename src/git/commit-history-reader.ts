@@ -44,6 +44,37 @@ export function parseLogOutput(raw: string): CommitSource[] {
   return commits;
 }
 
+export const HEAD_VERIFY_ARGS: readonly string[] = Object.freeze([
+  "rev-parse",
+  "--verify",
+  "--quiet",
+  "--end-of-options",
+  "HEAD",
+]);
+
+/**
+ * Does the repository have no commits yet?
+ *
+ * Structural, not textual: `rev-parse --verify --quiet HEAD` prints nothing and
+ * exits 1 when HEAD is unborn, so no English (or translated) stderr is read.
+ * A repository that is not a repository at all, or any other hard failure,
+ * exits 128 with stderr and is deliberately *not* reported as empty — that must
+ * still surface as an error from the caller.
+ */
+async function headIsUnborn(
+  runner: GitRunner,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const args = [...HEAD_VERIFY_ARGS];
+  const result = await (signal === undefined
+    ? runner.run(args)
+    : runner.run(args, { signal })).catch(() => undefined);
+
+  if (result === undefined) return false;
+  return result.code === 1 && result.stdout.trim() === "" &&
+    result.stderr.trim() === "";
+}
+
 export async function readRecentCommits(
   runner: GitRunner,
   count = DEFAULT_HISTORY_COUNT,
@@ -61,6 +92,14 @@ export async function readRecentCommits(
     : await runner.run(args, { signal });
 
   if (result.code !== 0) {
+    if (await headIsUnborn(runner, signal)) {
+      return [];
+    }
+
+    // Fallback only: git's English wording, for a host where the structural
+    // check above could not be made. The environment cannot be pinned to
+    // `LC_ALL=C` under Pi, so a translated git reaches here with localized
+    // stderr and must not be the thing the empty-repository path depends on.
     if (
       /unknown revision|does not have any commits/i.test(result.stderr) ||
       /bad revision ['"]?HEAD['"]?/i.test(result.stderr)

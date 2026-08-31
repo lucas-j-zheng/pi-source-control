@@ -1,6 +1,7 @@
 import { parseUnifiedDiff } from "../diff/unified-parser.ts";
 import type { ChangedFile, DiffReview } from "../model/diff.ts";
 import {
+  GIT_SAFE_DIFF_FLAGS,
   GitReviewError,
   runOrThrow,
   type GitRunner,
@@ -63,7 +64,7 @@ export async function readRangeReview(
     runner,
     [
       "diff",
-      "--no-ext-diff",
+      ...GIT_SAFE_DIFF_FLAGS,
       "--no-color",
       "--find-renames",
       "--unified=3",

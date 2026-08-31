@@ -35,7 +35,7 @@ const HELP_LINES = [
   "Space  Mark/unmark the selected file as reviewed",
   "c  Add or edit a comment on the selected line",
   "d  Delete the comment on the selected line",
-  "S  Submit queued comments to the prompt",
+  "S  Submit queued comments to the agent",
   "g  Refresh sources and diffs",
   "?  Toggle help",
 ] as const;

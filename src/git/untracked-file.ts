@@ -2,6 +2,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { fingerprintPatch } from "../diff/patch-fingerprint.ts";
+import { sanitizeContent, sanitizeLabel } from "../diff/sanitize.ts";
 import type { ChangedFile, DiffLine } from "../model/diff.ts";
 
 export const MAX_UNTRACKED_BYTES = 1_048_576;
@@ -15,9 +16,17 @@ export function synthesizeUntrackedFile(
   content: string,
   group: "working",
 ): ChangedFile {
-  const contentLines = content === "" ? [] : content.split("\n");
+  const rawLines = content === "" ? [] : content.split("\n");
   const hasTrailingNewline = content.endsWith("\n");
-  if (hasTrailingNewline) contentLines.pop();
+  if (hasTrailingNewline) rawLines.pop();
+
+  // A tracked diff never carries the CR of a CRLF line ending, so drop it here
+  // too; every other control byte is untrusted repository content and is
+  // neutralised at this synthesis boundary, exactly as the parser does.
+  const contentLines = rawLines.map((line) =>
+    sanitizeContent(line.endsWith("\r") ? line.slice(0, -1) : line)
+  );
+  const safePath = sanitizeLabel(relPath);
 
   const lines: DiffLine[] = contentLines.map((line, index) => ({
     kind: "addition",
@@ -29,10 +38,10 @@ export function synthesizeUntrackedFile(
   }));
   const hunkHeader = `@@ -0,0 +1,${lines.length} @@`;
   const patchLines = [
-    `diff --git a/${relPath} b/${relPath}`,
+    `diff --git a/${safePath} b/${safePath}`,
     "new file mode 100644",
     "--- /dev/null",
-    `+++ b/${relPath}`,
+    `+++ b/${safePath}`,
   ];
 
   if (lines.length > 0) {
@@ -46,15 +55,15 @@ export function synthesizeUntrackedFile(
   }
 
   const rawPatch = `${patchLines.join("\n")}\n`;
-  const slash = relPath.lastIndexOf("/");
+  const slash = safePath.lastIndexOf("/");
 
   return {
-    id: `${group}:${relPath}`,
+    id: `${group}:${safePath}`,
     group,
     status: "untracked",
-    newPath: relPath,
-    displayName: slash === -1 ? relPath : relPath.slice(slash + 1),
-    displayDirectory: slash === -1 ? "" : relPath.slice(0, slash),
+    newPath: safePath,
+    displayName: slash === -1 ? safePath : safePath.slice(slash + 1),
+    displayDirectory: slash === -1 ? "" : safePath.slice(0, slash),
     additions: lines.length,
     deletions: 0,
     isBinary: false,
@@ -126,16 +135,17 @@ function placeholder(
   relPath: string,
   flags: { isBinary?: boolean; isOversized?: boolean },
 ): ChangedFile {
-  const slash = relPath.lastIndexOf("/");
+  const safePath = sanitizeLabel(relPath);
+  const slash = safePath.lastIndexOf("/");
   const rawPatch = "";
 
   return {
-    id: `working:${relPath}`,
+    id: `working:${safePath}`,
     group: "working",
     status: "untracked",
-    newPath: relPath,
-    displayName: slash === -1 ? relPath : relPath.slice(slash + 1),
-    displayDirectory: slash === -1 ? "" : relPath.slice(0, slash),
+    newPath: safePath,
+    displayName: slash === -1 ? safePath : safePath.slice(slash + 1),
+    displayDirectory: slash === -1 ? "" : safePath.slice(0, slash),
     additions: 0,
     deletions: 0,
     isBinary: flags.isBinary ?? false,

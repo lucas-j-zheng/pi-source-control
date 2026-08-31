@@ -33,6 +33,7 @@ import type {
   ExecLike,
 } from "../../src/command/diff-command.ts";
 import { runDiffCommand } from "../../src/command/diff-command.ts";
+import { GIT_GLOBAL_FLAGS } from "../../src/git/git-client.ts";
 import {
   createDiffCommandDeps,
   type DiffHostContext,
@@ -80,14 +81,19 @@ const exec: ExecLike = async (_cmd, args) => {
     code: 0,
     killed: false,
   });
-  const command = args[0];
-  if (command === "rev-parse" && args[1] === "--show-toplevel") {
+  let commandIndex = 0;
+  while (GIT_GLOBAL_FLAGS.includes(args[commandIndex] ?? "")) {
+    commandIndex += 1;
+  }
+  const gitArgs = args.slice(commandIndex);
+  const command = gitArgs[0];
+  if (command === "rev-parse" && gitArgs[1] === "--show-toplevel") {
     return ok(`${ROOT}\n`);
   }
   if (command === "status") return ok(" M src/app.ts\0");
-  if (command === "diff") {
+  if (command === "diff" || command === "diff-files") {
     // `diff --cached ...` is the staged patch; the plain one is the work tree.
-    return ok(args[1] === "--cached" ? "" : WORKING_PATCH);
+    return ok(gitArgs[1] === "--cached" ? "" : WORKING_PATCH);
   }
   if (command === "log") return ok(logRecord());
   return ok("");

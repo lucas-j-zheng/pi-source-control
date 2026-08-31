@@ -59,22 +59,33 @@ export function buildReviewMessage(comments: ReviewComment[]): string;
 
 ## Behavior
 - Keys: `c` → `compose-comment`; `d` on a line that already has a comment → `delete-comment` (no comment there is a no-op); `S` (shift+s) → `submit-comments`. `c` with no cursor (no hunks, or a binary/oversized placeholder) sets `notice = "Nothing to comment on here."`.
-- `compose-comment` emits an effect; the view calls `composeComment(existingBody)`, which in the Pi adapter is `ctx.ui.editor("Comment on <file>:<line>", prefill)`. A non-empty trimmed result dispatches `add-comment`; `undefined` or whitespace-only is a no-op. Commenting on a line that already has a comment prefills the existing body and **replaces** it.
+- `compose-comment` emits an effect; the view calls `composeComment(existingBody)`, ~~which in the Pi adapter is `ctx.ui.editor("Comment on <file>:<line>", prefill)`~~ — **superseded by spec 25**: composing happens in the inline editor drawn under the anchored line (`src/ui/line-editor.ts`), and `DiffCommandDeps.editor` no longer exists. A non-empty trimmed result dispatches `add-comment`; `undefined` or whitespace-only is a no-op. Commenting on a line that already has a comment prefills the existing body and **replaces** it.
 - Comments are **queued, never sent one at a time.** `submit-comments` builds the message with `buildReviewMessage`, emits `submit-review`, clears `state.comments`, then emits `close` — you land back in Pi with the message ready.
 - `submit-comments` with an empty queue sets `notice = "No comments to submit."` and does not close.
-- `submitReview(message)` in the adapter calls `ctx.ui.setEditorText(message)` — it **prefills the prompt, it does not send**. The user reviews and presses enter. `pi.sendUserMessage` is deliberately not used.
-- `contextText` is the anchored line plus up to 3 lines either side *within the same hunk*, each rendered as `<marker><content>` where marker is `-`, `+`, or a space, so it reads as a patch fragment.
+- ~~`submitReview(message)` in the adapter calls `ctx.ui.setEditorText(message)` — it **prefills the prompt, it does not send**.~~
+  **Superseded by spec 30** (behavior changed in commit `de92831`). `submitReview` now calls
+  `src/command/review-delivery.ts`: when the host exposes `pi.sendUserMessage` the review is
+  submitted as a user turn (`deliverAs: "followUp"`, so it never interrupts a running turn) and
+  `ctx.ui.setEditorText` is the fallback for builds without that API, or when the call throws
+  synchronously. The send is fire-and-forget — Pi catches the promise rejection internally — so
+  the notice reads `Review sent to the agent — <n> comments` and claims nothing more.
+- ~~`contextText` is the anchored line plus up to 3 lines either side *within the same hunk*.~~
+  **Superseded by spec 30** (behavior changed in commit `de92831`): the message carries only the
+  anchored line, rendered as `<marker><content>` where marker is `-`, `+`, or a space, because the
+  agent can read the surrounding lines itself. `ReviewComment.contextText` is still declared and is
+  now dead; spec 30 removes the field.
 - `buildReviewMessage` output, exactly:
   ```
   Review of <scopeLabel> — <n> comment(s) from /diff.
 
   1. <filePath>:<line> (<added|removed|context>)
-       <contextText, each line indented 5 spaces>
+       <the anchored line, prefixed by its diff marker, indented 5 spaces>
 
      <body>
 
   2. ...
   ```
+  Spec 23 appends a suggested per-file work plan after the numbered entries.
   `<line>` is `newLineNumber` when present, otherwise `-<oldLineNumber>`. Comments are ordered by file path, then by `newLineNumber ?? oldLineNumber`. When comments span more than one scope the header reads `Review of multiple sources` and each entry appends ` [<scopeLabel>]`.
 - The file list marks files with pending comments with `●` in the reviewed-marker column when the file is not already marked reviewed; the footer shows `<n> comment(s) · S submit` when the queue is non-empty. The help overlay documents `c`, `d`, `S`.
 - Comments are in-memory only: never written to the repo, and dropped on close without submitting. `refresh` (`g`) keeps comments whose file still exists with an unchanged `patchFingerprint` and drops the rest, with a notice naming how many were dropped.
@@ -96,7 +107,7 @@ export function buildReviewMessage(comments: ReviewComment[]): string;
 - "refresh keeps comments on unchanged patches and drops the rest"
 
 ## Out of scope
-- Auto-sending the message, comment intents/types, multi-line range selection, persisting comments across sessions, threading, editing the assembled message inside the reviewer.
+- ~~Auto-sending the message~~ (**superseded by spec 30**: `Shift+S` submits a user turn through `pi.sendUserMessage`), comment intents/types, multi-line range selection, persisting comments across sessions, threading, editing the assembled message inside the reviewer.
 
 ## Done when
 `pnpm check` exits 0 with 12 new tests passing and all existing tests passing.

@@ -1,10 +1,12 @@
 {
-  "name": "pi-source-control",
-  "version": "0.1.0",
+  "name": "@lucas-j-zheng/pi-source-control",
+  "version": "0.2.0",
   "description": "Read-only Source Control diff reviewer for the Pi coding agent (/diff)",
   "type": "module",
-  "private": true,
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "src",
     "README.md",
@@ -16,6 +18,9 @@
   "keywords": [
     "pi-package"
   ],
+  "exports": {
+    ".": "./src/extension.ts"
+  },
   "pi": {
     "extensions": [
       "./src/extension.ts"
@@ -27,8 +32,8 @@
     "check": "pnpm test && pnpm typecheck"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "@earendil-works/pi-tui": "^0.84.1"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.1",

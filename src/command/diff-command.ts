@@ -6,8 +6,11 @@ import {
 import {
   assertReadOnly,
   detectRepositoryRoot,
+  GIT_ENV,
   GIT_TIMEOUT_MS,
   GitReviewError,
+  killedError,
+  withGlobalFlags,
   type GitRunner,
 } from "../git/git-client.ts";
 import { readRangeReview } from "../git/range-review-reader.ts";
@@ -35,7 +38,12 @@ export interface ExecLike {
   (
     cmd: string,
     args: string[],
-    opts?: { cwd?: string; signal?: AbortSignal; timeout?: number },
+    opts?: {
+      cwd?: string;
+      signal?: AbortSignal;
+      timeout?: number;
+      env?: Readonly<Record<string, string>>;
+    },
   ): Promise<{
     stdout: string;
     stderr: string;
@@ -47,12 +55,32 @@ export interface ExecLike {
 export function createPiGitRunner(exec: ExecLike, cwd: string): GitRunner {
   return {
     async run(args, options = {}) {
-      assertReadOnly(args);
-      const result = await exec("git", args, {
+      // Validate the argv that actually reaches git, global flags included, so
+      // the guard can never be handed a different command than the one spawned.
+      const argv = withGlobalFlags(args);
+      assertReadOnly(argv);
+      const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
+      const result = await exec("git", argv, {
         cwd,
         signal: options.signal,
-        timeout: options.timeoutMs ?? GIT_TIMEOUT_MS,
+        timeout: timeoutMs,
+        // The shipped Pi drops `env` (its ExecOptions has no such field and
+        // execCommand never forwards one to spawn), so nothing may depend on
+        // these pins: `--no-optional-locks` in the argv carries the guarantee
+        // that matters. Passing them stays correct if Pi gains support.
+        env: GIT_ENV,
       });
+      // Pi kills a timed-out or aborted child with SIGTERM and then resolves it
+      // as `code ?? 0` (see pi-coding-agent dist/core/exec.js), so the exit code
+      // alone would report a truncated patch as a complete one. `killed` is the
+      // only signal that the output is partial, and it outranks the code.
+      if (result.killed) {
+        throw killedError(
+          options.signal?.aborted === true ? "abort" : "timeout",
+          timeoutMs,
+          result.stderr,
+        );
+      }
       return {
         stdout: result.stdout,
         stderr: result.stderr,

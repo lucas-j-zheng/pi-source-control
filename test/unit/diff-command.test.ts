@@ -7,7 +7,10 @@ import {
   type ExecLike,
 } from "../../src/command/diff-command.ts";
 import register from "../../src/extension.ts";
-import { READ_ONLY_GIT_COMMANDS } from "../../src/git/git-client.ts";
+import {
+  GIT_GLOBAL_FLAGS,
+  READ_ONLY_GIT_COMMANDS,
+} from "../../src/git/git-client.ts";
 import { SourceControlView } from "../../src/ui/source-control-view.ts";
 import { plainStyler } from "../../src/ui/theme.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -47,6 +50,16 @@ function logRecord(
     subject,
     "",
   ].join("\0");
+}
+
+/**
+ * The argv minus the global flags the runner prepends, so the fakes below can
+ * keep switching on the subcommand.
+ */
+function subcommand(args: string[]): string[] {
+  let index = 0;
+  while (GIT_GLOBAL_FLAGS.includes(args[index] ?? "")) index += 1;
+  return args.slice(index);
 }
 
 function cannedResult(args: string[]): {
@@ -103,7 +116,7 @@ function harness(
     calls,
     exec: async (cmd, args, opts) => {
       calls.push({ cmd, args, opts });
-      return responder(args);
+      return responder(subcommand(args));
     },
     notify,
     openView,
@@ -178,7 +191,7 @@ describe("diff command", () => {
 
     await runDiffCommand("staged", subject.deps());
 
-    const invocations = subject.calls.map((call) => call.args);
+    const invocations = subject.calls.map((call) => subcommand(call.args));
     expect(invocations).toContainEqual([
       "status",
       "--porcelain=v1",
@@ -189,14 +202,20 @@ describe("diff command", () => {
       "diff",
       "--cached",
       "--no-ext-diff",
+      "--no-textconv",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
       "--no-color",
       "--find-renames",
       "--unified=3",
       "--",
     ]);
     expect(invocations).toContainEqual([
-      "diff",
+      "diff-files",
       "--no-ext-diff",
+      "--no-textconv",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
       "--no-color",
       "--find-renames",
       "--unified=3",
@@ -284,7 +303,7 @@ describe("diff command", () => {
     expect(order).toEqual(["closed", "sendUserMessage"]);
     expect(sendUserMessage.mock.calls[0]?.[0]).toContain("Please rename this.");
     expect(setEditorText).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith("Review sent — 1 comment", "info");
+    expect(notify).toHaveBeenCalledWith("Review sent to the agent — 1 comment", "info");
   });
 
   it("without a send API the review still lands in the prompt with a notice", async () => {
@@ -340,6 +359,29 @@ describe("diff command", () => {
     );
   });
 
+  it("a killed status read is surfaced through notify, not treated as empty", async () => {
+    // Pi kills the child with SIGTERM and then resolves it as `code ?? 0`, so
+    // without the killed check this would open the view on an empty workspace.
+    const subject = harness((args) =>
+      args[0] === "status"
+        ? {
+            stdout: "1 .M N... 100644 100644 100644 aaa bbb src/a.ts\0",
+            stderr: "",
+            code: 0,
+            killed: true,
+          }
+        : cannedResult(args)
+    );
+
+    await runDiffCommand("", subject.deps());
+
+    expect(subject.openView).not.toHaveBeenCalled();
+    expect(subject.notify).toHaveBeenCalledWith(
+      "Git command timed out after 10000 ms.",
+      "error",
+    );
+  });
+
   it("pi runner refuses mutating git commands", async () => {
     const subject = harness();
     const runner = createPiGitRunner(subject.exec, ROOT);
@@ -361,8 +403,15 @@ describe("diff command", () => {
     for (const call of subject.calls) {
       expect(call.cmd).toBe("git");
       expect(Array.isArray(call.args)).toBe(true);
-      expect(READ_ONLY_GIT_COMMANDS.has(call.args[0] ?? "")).toBe(true);
-      expect(call.opts).toMatchObject({ cwd: ROOT, timeout: 10_000 });
+      expect(call.args[0]).toBe("--no-optional-locks");
+      expect(READ_ONLY_GIT_COMMANDS.has(subcommand(call.args)[0] ?? "")).toBe(
+        true,
+      );
+      expect(call.opts).toMatchObject({
+        cwd: ROOT,
+        timeout: 10_000,
+        env: { GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", GIT_PAGER: "cat" },
+      });
 
       const separator = call.args.indexOf("--end-of-options");
       if (separator >= 0) {

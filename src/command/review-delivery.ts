@@ -9,6 +9,14 @@
  *
  * Every path notifies. A review that silently disappears is the worst outcome
  * here, so "no notification" is not a valid state.
+ *
+ * What the notice can honestly claim: `pi.sendUserMessage` is fire-and-forget.
+ * Pi's `AgentSession` wraps it as `sendUserMessage(...).catch(err => emitError(...))`
+ * (`dist/core/agent-session.js`), so the promise never reaches this module and an
+ * asynchronous failure is invisible here. The `try` below therefore catches only a
+ * synchronous throw — a missing/uninitialized runtime, a stale extension. The
+ * notice says the review was handed to the agent, which is exactly what we know;
+ * it does not claim the model received it.
  */
 
 export type ReviewDeliverySink = (text: string) => void;
@@ -39,8 +47,8 @@ function reasonFor(error: unknown): string {
 /**
  * Hand `message` to Pi and tell the user what happened.
  *
- * Returns "sent" when a turn was submitted, "prefilled" when the message was
- * left in the prompt for the user to send with Enter.
+ * Returns "sent" when the send call returned without throwing, "prefilled" when
+ * the message was left in the prompt for the user to send with Enter.
  */
 export function deliverReview(
   message: string,
@@ -52,7 +60,9 @@ export function deliverReview(
   if (deps.sendUserMessage !== undefined) {
     try {
       deps.sendUserMessage(message);
-      deps.notify(`Review sent — ${counted}`, "info");
+      // The send is fire-and-forget (see the module comment): returning without
+      // throwing is the whole of what we know, so the notice claims no more.
+      deps.notify(`Review sent to the agent — ${counted}`, "info");
       return "sent";
     } catch (error) {
       // Fall through to the prompt rather than losing the review, but say why.

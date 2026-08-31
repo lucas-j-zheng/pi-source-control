@@ -12,7 +12,9 @@ coding agent as a `/diff` command. Product/handoff document: `docs/plan.md`
 - Tests: **vitest**. Unit tests are pure (no git, no fs). Integration tests create
   temporary git repos under `os.tmpdir()` and run real `git`.
 - Host APIs (types only at dev time, provided by Pi at runtime, declared as
-  `peerDependencies: "*"`):
+  `peerDependencies: "^0.84.1"` — narrowed from `"*"` by spec 30. Pi installs managed
+  packages with `--legacy-peer-deps` / `--omit=peer`, so the range documents the
+  version this was built against rather than driving any install):
   - `@earendil-works/pi-coding-agent`: `ExtensionAPI`, `ExtensionCommandContext`,
     `pi.registerCommand(name, {description, handler(args, ctx)})`,
     `pi.exec(cmd, args, {cwd?, signal?, timeout?}) → {stdout, stderr, code, killed}`,
@@ -27,7 +29,10 @@ coding agent as a `/diff` command. Product/handoff document: `docs/plan.md`
     fg roles used: `accent borderAccent borderMuted muted dim text warning error success toolDiffAdded toolDiffRemoved toolDiffContext`. bg role: `selectedBg`.
 - **Phase 0 result (locked): Pi has no mouse/pointer contract.** Mouse support is
   out of scope. `HitTarget`s are still computed from layout as a pure, tested model
-  but nothing dispatches them.
+  but **nothing dispatches them**: `ui/hit-target-registry.ts` has no caller that
+  turns a coordinate into a `UiAction`, and it is kept deliberately (spec 13's
+  contract for a pointer future), not by accident. Spec 30 confirms it is retained
+  on purpose while the rest of the dead code named there is deleted.
 
 ## Commands
 
@@ -48,6 +53,7 @@ src/
   command/
     review-request-parser.ts   "/diff ..." args → ReviewRequest | ReviewRequestError
     diff-command.ts            handler wiring: parse → read → open view; error states
+    review-delivery.ts         composed review → sendUserMessage, or the prompt (spec 30)
   git/
     git-client.ts              GitRunner interface + node (child_process) + pi.exec impls
     status-parser.ts           porcelain v1 -z → StatusEntry[]
@@ -65,6 +71,8 @@ src/
   model/
     diff.ts                    all data types (see below) — scaffolded, do not redefine
     review-state.ts            ReviewSessionState, UiAction, reducer
+    review-comment.ts          ReviewComment, buildComment, buildReviewMessage
+    review-plan.ts             queued comments → per-file work units (spec 23)
   ui/
     theme.ts                   Styler interface (fg/bg/bold) + plain no-color styler for tests
     layout.ts                  (width,height) → Layout (mode, pane widths, row budgets)
@@ -74,7 +82,10 @@ src/
     footer-renderer.ts
     unified-renderer.ts
     side-by-side-renderer.ts
-    hit-target-registry.ts
+    hit-target-registry.ts     computed, never dispatched (see Stack, above)
+    line-editor.ts             inline comment editor buffer + key handling (spec 25)
+    synced-scroll-view.ts      ScrollView that reports and follows an external offset
+    fullscreen-layout.ts       pi-tui HStack/VStack composition for fullscreen mode
     input-controller.ts        key data → UiAction
     source-control-view.ts     root Component: composes everything, caches, invalidates
 test/
@@ -86,15 +97,27 @@ test/
 
 ## Module boundaries (hard rules)
 
-1. `diff/*` and `model/*` import nothing from `git/*`, `ui/*`, or Pi packages.
+Rules 1, 3 and 4 were corrected by **spec 30** to match the code as shipped; the
+original text described a boundary the tree never had.
+
+1. `diff/*` and `model/*` import nothing from `git/*`, `ui/*`, or the Pi *agent* package.
+   `diff/*` may import the pure text helpers `visibleWidth/truncateToWidth/sliceByColumn`
+   from `@earendil-works/pi-tui` (`diff/line-slicing.ts` does); `model/*` imports no Pi
+   package at all.
 2. `git/*` imports only `model/*`, `diff/*`, `node:*`. It never imports `ui/*` or Pi.
    All git execution goes through the `GitRunner` interface; readers take a runner
    as a constructor/function argument so tests can inject a real one over a temp repo.
-3. `ui/*` imports `model/*` and `diff/*`, plus `visibleWidth/truncateToWidth/sliceByColumn`
-   from `@earendil-works/pi-tui` (pure functions, safe in vitest). Renderers take a
-   `Styler` (from `ui/theme.ts`), never the Pi `Theme` directly. Renderers return
-   `string[]` and **every line satisfies `visibleWidth(line) <= width`**.
-4. Only `extension.ts` and `command/diff-command.ts` import `@earendil-works/pi-coding-agent`.
+3. `ui/*` imports `model/*` and `diff/*`, plus from `@earendil-works/pi-tui`: the pure
+   text helpers `visibleWidth/truncateToWidth/sliceByColumn`, the pure key matchers
+   `matchesKey/decodeKittyPrintable`, and the component types `Component`, `VStack`,
+   `HStack`, `ScrollView` used by `fullscreen-layout.ts`, `synced-scroll-view.ts` and
+   `line-editor.ts`. All of it is safe in vitest. Renderers take a `Styler` (from
+   `ui/theme.ts`), never the Pi `Theme` directly. Renderers return `string[]` and
+   **every line satisfies `visibleWidth(line) <= width`**.
+4. Only `extension.ts` imports `@earendil-works/pi-coding-agent`, and only as a type.
+   `command/diff-command.ts` is host-free: it receives `exec`, `notify`,
+   `setEditorText`, `sendUserMessage` and `openView` as injected dependencies
+   (`DiffCommandDeps`), which is what makes it unit-testable without Pi.
 5. Git is **read-only**: only `rev-parse status diff diff-tree show rev-list merge-base log`.
    Always argument arrays, never shell strings. User revision text is only ever passed
    after `--end-of-options` to `rev-parse --verify`, and only the resolved full OID is

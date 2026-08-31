@@ -3,7 +3,11 @@ import type {
   CommitMetadata,
   DiffReview,
 } from "../model/diff.ts";
-import { runOrThrow, type GitRunner } from "./git-client.ts";
+import {
+  GIT_SAFE_DIFF_FLAGS,
+  runOrThrow,
+  type GitRunner,
+} from "./git-client.ts";
 import {
   LOG_FORMAT,
   parseLogOutput,
@@ -57,7 +61,7 @@ export async function readCommitReview(
         "--no-commit-id",
         "-r",
         "-p",
-        "--no-ext-diff",
+        ...GIT_SAFE_DIFF_FLAGS,
         "--no-color",
         "--find-renames",
         commitOid,
@@ -65,7 +69,7 @@ export async function readCommitReview(
       ]
     : [
         "diff",
-        "--no-ext-diff",
+        ...GIT_SAFE_DIFF_FLAGS,
         "--no-color",
         "--find-renames",
         "--unified=3",
