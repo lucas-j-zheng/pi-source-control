@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { DiffGroup, DiffReview } from "../../src/model/diff.ts";
 import { readWorkspaceReview } from "../../src/git/workspace-review-reader.ts";
+import { WORKING_DIFF_ARGS } from "../../src/git/workspace-review-reader.ts";
+import { splitPatchByFile } from "../../src/diff/unified-parser.ts";
 import { createTempRepo, type TempRepo } from "../helpers/temp-repo.ts";
 
 describe("workspace review reader", () => {
@@ -187,6 +189,29 @@ describe("workspace review reader", () => {
 
     expect(group(review, "working").files).toMatchObject([
       { id: "working:a.ts", isOversized: true, hunks: [] },
+    ]);
+    expect(await repo.snapshot()).toBe(before);
+  });
+
+  it("a review whose files exceed the total budget marks the remainder oversized", async () => {
+    await repo.write("b.ts", "export const b = 1;\n");
+    await repo.git(["add", "b.ts"]);
+    await repo.git(["commit", "-m", "add b"]);
+    await repo.write("a.ts", "export const value = 200;\n");
+    await repo.write("b.ts", "export const b = 200;\n");
+    const raw = await repo.runner.run([...WORKING_DIFF_ARGS]);
+    const firstChunk = splitPatchByFile(raw.stdout)[0];
+    if (firstChunk === undefined) throw new Error("expected a working patch");
+    const before = await repo.snapshot();
+
+    const review = await readWorkspaceReview(repo.runner, repo.root, {
+      maxTotalPatchBytes: Buffer.byteLength(firstChunk),
+    });
+    const files = group(review, "working").files;
+
+    expect(files).toMatchObject([
+      { newPath: "a.ts", isOversized: false },
+      { newPath: "b.ts", isOversized: true, hunks: [] },
     ]);
     expect(await repo.snapshot()).toBe(before);
   });

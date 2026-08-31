@@ -7,6 +7,10 @@ import type { ChangedFile, DiffLine } from "../model/diff.ts";
 
 export const MAX_UNTRACKED_BYTES = 1_048_576;
 
+export interface UntrackedReadOptions {
+  reserveBytes?(byteLength: number): boolean;
+}
+
 export function isLikelyBinary(sample: Uint8Array): boolean {
   return sample.subarray(0, 8_000).includes(0);
 }
@@ -90,6 +94,7 @@ export function synthesizeUntrackedFile(
 export async function readUntrackedFile(
   repoRoot: string,
   relPath: string,
+  options: UntrackedReadOptions = {},
 ): Promise<ChangedFile> {
   const absolutePath = path.resolve(repoRoot, relPath);
 
@@ -107,6 +112,9 @@ export async function readUntrackedFile(
       return placeholder(relPath, { isBinary: true });
     }
     if (stats.size > MAX_UNTRACKED_BYTES) {
+      return placeholder(relPath, { isOversized: true });
+    }
+    if (options.reserveBytes?.(stats.size) === false) {
       return placeholder(relPath, { isOversized: true });
     }
 

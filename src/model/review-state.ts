@@ -108,6 +108,12 @@ export interface ReviewEnv {
     mode: "unified" | "side-by-side",
   ): number[];
   lineAnchors(file: ChangedFile): LineAnchor[];
+  anchorsInRowRange(
+    file: ChangedFile,
+    mode: "unified" | "side-by-side",
+    startRow: number,
+    endRow: number,
+  ): LineAnchor[];
   rowForAnchor(
     file: ChangedFile,
     anchor: LineAnchor,
@@ -382,10 +388,12 @@ function setDiffViewportOffset(
     const cursorRow = env.rowForAnchor(file, currentAnchor, state.viewMode);
     const viewportEnd = offset + env.layout.bodyHeight;
     if (cursorRow < offset || cursorRow >= viewportEnd) {
-      const visibleAnchors = env.lineAnchors(file).filter((anchor) => {
-        const row = env.rowForAnchor(file, anchor, state.viewMode);
-        return row >= offset && row < viewportEnd;
-      });
+      const visibleAnchors = env.anchorsInRowRange(
+        file,
+        state.viewMode,
+        offset,
+        viewportEnd,
+      );
       const nextAnchor = offset > currentOffset
         ? visibleAnchors[0]
         : visibleAnchors.at(-1);

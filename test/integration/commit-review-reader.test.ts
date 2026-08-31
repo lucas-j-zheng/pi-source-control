@@ -113,4 +113,24 @@ describe("commit review reader", () => {
 
     expect(await repo.snapshot()).toBe(before);
   });
+
+  it("a commit patch over the size limit is marked oversized", async () => {
+    await repo.write("large.txt", `${"large line\n".repeat(200)}`);
+    await repo.git(["add", "large.txt"]);
+    await repo.git(["commit", "-m", "large patch"]);
+    const before = await repo.snapshot();
+
+    const review = await readCommitReview(
+      repo.runner,
+      repo.root,
+      "HEAD",
+      undefined,
+      { maxPatchBytes: 100 },
+    );
+
+    expect(review.groups[0]?.files).toMatchObject([
+      { newPath: "large.txt", isOversized: true, hunks: [] },
+    ]);
+    expect(await repo.snapshot()).toBe(before);
+  });
 });

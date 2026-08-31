@@ -116,6 +116,12 @@ function fakeEnv(options: EnvOptions = {}): ReviewEnv {
     lineAnchors() {
       return diffAnchors;
     },
+    anchorsInRowRange(file, mode, startRow, endRow) {
+      return diffAnchors.filter((anchor) => {
+        const row = this.rowForAnchor(file, anchor, mode);
+        return row >= startRow && row < endRow;
+      });
+    },
     rowForAnchor(_file, anchor, mode) {
       const position = anchorPosition(anchor);
       if (position < 0) return -1;
@@ -434,6 +440,24 @@ describe("review state", () => {
       hunkIndex: 0,
       lineIndex: 3,
     });
+  });
+
+  it("viewport scrolling keeps the cursor visible without rebuilding per anchor", () => {
+    const base = fakeEnv();
+    const rowForAnchor = vi.fn(base.rowForAnchor.bind(base));
+    const anchorsInRowRange = vi.fn(base.anchorsInRowRange.bind(base));
+    const env: ReviewEnv = { ...base, rowForAnchor, anchorsInRowRange };
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "focus-diff" }, env);
+
+    state = apply(state, { type: "scroll-view", delta: 3 }, env);
+
+    expect(state.cursorByFile.get("working:file-0")).toEqual({
+      hunkIndex: 0,
+      lineIndex: 1,
+    });
+    expect(rowForAnchor).toHaveBeenCalledTimes(1);
+    expect(anchorsInRowRange).toHaveBeenCalledTimes(1);
   });
 
   it("scroll-view clamps at the top and bottom of the diff", () => {

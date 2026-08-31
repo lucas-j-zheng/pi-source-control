@@ -13,6 +13,7 @@ const env: ReviewEnv = {
   diffRowCount: () => 0,
   hunkRows: () => [],
   lineAnchors: () => [],
+  anchorsInRowRange: () => [],
   rowForAnchor: () => -1,
 };
 const state = createInitialState("working", env);

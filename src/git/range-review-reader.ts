@@ -1,4 +1,3 @@
-import { parseUnifiedDiff } from "../diff/unified-parser.ts";
 import type { ChangedFile, DiffReview } from "../model/diff.ts";
 import {
   GIT_SAFE_DIFF_FLAGS,
@@ -7,6 +6,13 @@ import {
   type GitRunner,
 } from "./git-client.ts";
 import { resolveRevision } from "./revision-resolver.ts";
+import {
+  applyPatchLimit,
+  createPatchBudget,
+  MAX_PATCH_BYTES,
+  MAX_TOTAL_PATCH_BYTES,
+  type PatchLimitOptions,
+} from "./patch-limits.ts";
 
 export interface RangeRequestInput {
   left: string;
@@ -51,6 +57,7 @@ export async function readRangeReview(
   repoRoot: string,
   input: RangeRequestInput,
   signal?: AbortSignal,
+  limits: PatchLimitOptions = {},
 ): Promise<DiffReview> {
   const [leftOid, rightOid] = await Promise.all([
     resolveRevision(runner, input.left),
@@ -75,7 +82,12 @@ export async function readRangeReview(
     "git-failed",
     runOptions,
   );
-  const files = parseUnifiedDiff(rawPatch, { group: "range" });
+  const files = applyPatchLimit(
+    rawPatch,
+    "range",
+    createPatchBudget(limits.maxTotalPatchBytes ?? MAX_TOTAL_PATCH_BYTES),
+    limits.maxPatchBytes ?? MAX_PATCH_BYTES,
+  );
   files.sort(compareByPath);
 
   const separator = input.mode === "two-dot" ? ".." : "...";

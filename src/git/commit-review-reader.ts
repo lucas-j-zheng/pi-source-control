@@ -1,4 +1,3 @@
-import { parseUnifiedDiff } from "../diff/unified-parser.ts";
 import type {
   CommitMetadata,
   DiffReview,
@@ -13,6 +12,13 @@ import {
   parseLogOutput,
 } from "./commit-history-reader.ts";
 import { resolveRevision } from "./revision-resolver.ts";
+import {
+  applyPatchLimit,
+  createPatchBudget,
+  MAX_PATCH_BYTES,
+  MAX_TOTAL_PATCH_BYTES,
+  type PatchLimitOptions,
+} from "./patch-limits.ts";
 
 export function commitSourceId(oid: string): string {
   return `commit:${oid}`;
@@ -50,6 +56,7 @@ export async function readCommitReview(
   repoRoot: string,
   revision: string,
   signal?: AbortSignal,
+  limits: PatchLimitOptions = {},
 ): Promise<DiffReview> {
   const commitOid = await resolveRevision(runner, revision);
   const metadata = await readCommitMetadata(runner, commitOid);
@@ -83,7 +90,12 @@ export async function readCommitReview(
     "git-failed",
     signal === undefined ? undefined : { signal },
   );
-  const files = parseUnifiedDiff(rawPatch, { group: "commit" });
+  const files = applyPatchLimit(
+    rawPatch,
+    "commit",
+    createPatchBudget(limits.maxTotalPatchBytes ?? MAX_TOTAL_PATCH_BYTES),
+    limits.maxPatchBytes ?? MAX_PATCH_BYTES,
+  );
   files.sort((left, right) =>
     left.newPath < right.newPath ? -1 : left.newPath > right.newPath ? 1 : 0
   );

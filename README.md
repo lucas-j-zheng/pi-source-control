@@ -119,7 +119,7 @@ nothing is written to the repository.
 - Untracked files, rendered as additions when they are text and no larger than 1 MiB. A larger untracked file is listed with an oversized-file placeholder and is never read into memory.
 - Unmerged or conflicted files, with a limited placeholder when a text diff cannot be shown.
 - Binary files, with a placeholder explaining that a text diff is unavailable.
-- Working-tree and staged files whose patch exceeds 4 MiB, with an oversized-file placeholder instead of a parsed diff. Commit and range reviews do not apply that per-file cap yet, so a very large single-commit diff is bounded only by available memory.
+- Files in workspace, commit, and range reviews whose patch exceeds 4 MiB, with an oversized-file placeholder instead of a parsed diff. A 32 MiB total patch budget also marks the remaining files oversized, and untracked-file reads are limited to 8 at a time.
 - Root commits, ordinary commits, and merge commits. Merge commits are compared with parent 1 and disclose that choice in the reviewer.
 - Two-dot ranges as endpoint-to-endpoint net diffs and three-dot ranges as merge-base-to-head diffs. A three-dot range with multiple merge bases is rejected because choosing one would be ambiguous.
 

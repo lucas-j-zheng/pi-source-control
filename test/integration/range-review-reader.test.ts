@@ -178,4 +178,22 @@ describe("range review reader", () => {
 
     expect(await repo.snapshot()).toBe(before);
   });
+
+  it("a range patch over the size limit is marked oversized", async () => {
+    const before = await repo.snapshot();
+
+    const review = await readRangeReview(
+      repo.runner,
+      repo.root,
+      { left: "main", right: "feature", mode: "two-dot" },
+      undefined,
+      { maxPatchBytes: 100 },
+    );
+
+    expect(review.groups[0]?.files.length).toBeGreaterThan(0);
+    expect(review.groups[0]?.files.every((file) =>
+      file.isOversized && file.hunks.length === 0
+    )).toBe(true);
+    expect(await repo.snapshot()).toBe(before);
+  });
 });

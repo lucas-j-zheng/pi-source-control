@@ -1,5 +1,4 @@
 import { fingerprintPatch } from "../diff/patch-fingerprint.ts";
-import { parseUnifiedDiff } from "../diff/unified-parser.ts";
 import type {
   ChangedFile,
   DiffGroupId,
@@ -17,10 +16,20 @@ import {
   statusForWorkTree,
 } from "./status-parser.ts";
 import { readUntrackedFile } from "./untracked-file.ts";
+import {
+  applyPatchLimit,
+  consumePatchBudget,
+  createPatchBudget,
+  MAX_PATCH_BYTES,
+  MAX_TOTAL_PATCH_BYTES,
+} from "./patch-limits.ts";
+
+export { MAX_PATCH_BYTES, MAX_TOTAL_PATCH_BYTES } from "./patch-limits.ts";
 
 export interface WorkspaceReadOptions {
   signal?: AbortSignal;
   maxPatchBytes?: number;
+  maxTotalPatchBytes?: number;
 }
 
 export const STAGED_DIFF_ARGS: readonly string[] = [
@@ -52,7 +61,7 @@ const STATUS_ARGS = [
   "-z",
   "--untracked-files=all",
 ] as const;
-const DEFAULT_MAX_PATCH_BYTES = 4 * 1024 * 1024;
+export const MAX_UNTRACKED_READ_CONCURRENCY = 8;
 
 export async function readWorkspaceReview(
   runner: GitRunner,
@@ -69,30 +78,32 @@ export async function readWorkspaceReview(
   ]);
 
   const entries = parsePorcelainStatus(rawStatus);
-  const maxPatchBytes = options.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES;
-  const stagedFiles = applyPatchLimit(
-    applyStatusToFiles(
-      parseUnifiedDiff(stagedPatch, { group: "staged" }),
-      entries,
-      "index",
-    ),
-    maxPatchBytes,
+  const maxPatchBytes = options.maxPatchBytes ?? MAX_PATCH_BYTES;
+  const budget = createPatchBudget(
+    options.maxTotalPatchBytes ?? MAX_TOTAL_PATCH_BYTES,
+  );
+  const stagedFiles = applyStatusToFiles(
+    applyPatchLimit(stagedPatch, "staged", budget, maxPatchBytes),
+    entries,
+    "index",
   );
   const trackedWorkingFiles = applyStatusToFiles(
-    parseUnifiedDiff(workingPatch, { group: "working" }),
+    applyPatchLimit(workingPatch, "working", budget, maxPatchBytes),
     entries,
     "workTree",
   );
   const untrackedEntries = entries.filter(
     (entry) => entry.index === "?" && entry.workTree === "?",
   );
-  const untrackedFiles = await Promise.all(
-    untrackedEntries.map((entry) => readUntrackedFile(repoRoot, entry.path)),
+  const untrackedFiles = await mapWithConcurrency(
+    untrackedEntries,
+    MAX_UNTRACKED_READ_CONCURRENCY,
+    (entry) =>
+      readUntrackedFile(repoRoot, entry.path, {
+        reserveBytes: (byteLength) => consumePatchBudget(budget, byteLength),
+      }),
   );
-  const workingFiles = applyPatchLimit(
-    [...trackedWorkingFiles, ...untrackedFiles],
-    maxPatchBytes,
-  );
+  const workingFiles = [...trackedWorkingFiles, ...untrackedFiles];
 
   stagedFiles.sort(compareByPath);
   workingFiles.sort(compareByPath);
@@ -159,21 +170,32 @@ function statusOnlyFile(group: DiffGroupId, newPath: string): ChangedFile {
   };
 }
 
-function applyPatchLimit(
-  files: ChangedFile[],
-  maxPatchBytes: number,
-): ChangedFile[] {
-  return files.map((file) =>
-    Buffer.byteLength(file.rawPatch) > maxPatchBytes
-      ? { ...file, isOversized: true, hunks: [] }
-      : file,
-  );
-}
-
 function compareByPath(left: ChangedFile, right: ChangedFile): number {
   return left.newPath < right.newPath
     ? -1
     : left.newPath > right.newPath
       ? 1
       : 0;
+}
+
+export async function mapWithConcurrency<T, U>(
+  items: readonly T[],
+  concurrency: number,
+  map: (item: T, index: number) => Promise<U>,
+): Promise<U[]> {
+  const results = new Array<U>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(
+    items.length,
+    Math.max(1, Math.trunc(concurrency)),
+  );
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await map(items[index]!, index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

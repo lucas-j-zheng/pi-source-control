@@ -28,6 +28,12 @@ import {
   type UiAction,
 } from "../model/review-state.ts";
 import { renderFileList } from "./file-list-renderer.ts";
+import {
+  buildDiffProjection,
+  createProjectionCache,
+  type Projection,
+  type ProjectionKey,
+} from "./diff-projection.ts";
 import { renderFooter } from "./footer-renderer.ts";
 import {
   buildFullscreenEntries,
@@ -99,14 +105,6 @@ const WORKSPACE_SOURCES: SourceListItem[] = [
   { kind: "working", id: "working", label: "Working Tree" },
   { kind: "staged", id: "staged", label: "Staged Changes" },
 ];
-
-// The unified and side-by-side row models agree on everything the composer span
-// is measured from, so both are read through this shape.
-interface ComposerRowSpan {
-  isComment?: boolean;
-  anchor?: LineAnchor;
-  anchors?: LineAnchor[];
-}
 
 function filesInReview(review: DiffReview): ChangedFile[] {
   return review.groups.flatMap((group) => group.files);
@@ -226,6 +224,13 @@ export class SourceControlView extends VStack {
   private state: ReviewSessionState;
   private lastLayout: Layout;
   private styleVersion = 0;
+  private commentsVersion = 0;
+  private composerVersion = 0;
+  private projectionComments: readonly ReviewComment[] = [];
+  private projectionComposer: ComposingEditor | undefined;
+  private readonly projectionCache = createProjectionCache((key, file) =>
+    this.buildProjection(key, file)
+  );
   private disposed = false;
   private operationEpoch = 0;
   private readonly commitCache = new Map<string, DiffReview>();
@@ -483,8 +488,12 @@ export class SourceControlView extends VStack {
     const previousFocus = this.state.focusedPane;
     const previousMode = this.state.viewMode;
     const layout = this.interactionLayout();
+    const previousComments = this.state.comments;
+    const previousComposing = this.state.composing;
     const result = reduce(this.state, action, this.environment(layout));
     this.state = result.state;
+    if (this.state.comments !== previousComments) this.commentsVersion += 1;
+    if (this.state.composing !== previousComposing) this.composerVersion += 1;
     this.syncFullscreenScrollOffsets();
     if (
       this.state.focusedPane !== previousFocus ||
@@ -844,40 +853,29 @@ export class SourceControlView extends VStack {
   }
 
   private environment(layout: Layout): ReviewEnv {
+    const viewMode = this.state?.viewMode ?? "unified";
     return {
       layout,
       sources: this.sources,
       filesForSource: (sourceId) => this.filesForSource(sourceId),
       fileById: (fileId) => this.fileById(fileId),
       diffRowCount: (file, mode) =>
-        mode === "side-by-side"
-          ? buildSideBySideRows(
-              file,
-              this.styler,
-              this.diffWidth(layout),
-              this.state.horizontalOffsetByFile.get(file.id) ?? 0,
-              undefined,
-              true,
-              this.commentsForFile(file),
-              this.composingForFile(file),
-            ).length
-          : buildUnifiedRows(
-              file,
-              this.styler,
-              Math.max(0, this.diffWidth(layout) - UNIFIED_GUTTER_WIDTH),
-              this.state.horizontalOffsetByFile.get(file.id) ?? 0,
-              undefined,
-              true,
-              this.commentsForFile(file),
-              this.composingForFile(file),
-            ).length,
+        this.projectionFor(file, mode, layout).rowCount,
       hunkRows: (file, mode) =>
         mode === "side-by-side"
           ? sbsHunkStartRows(file)
           : hunkStartRows(file),
-      lineAnchors: (file) => this.lineAnchors(file),
+      lineAnchors: (file) =>
+        [...this.projectionFor(file, viewMode, layout).anchors],
+      anchorsInRowRange: (file, mode, startRow, endRow) => {
+        const projection = this.projectionFor(file, mode, layout);
+        return projection.anchors.filter((anchor) => {
+          const row = projection.rowForAnchor(anchor);
+          return row >= startRow && row < endRow;
+        });
+      },
       rowForAnchor: (file, anchor, mode) =>
-        this.rowForAnchor(file, anchor, mode, layout),
+        this.projectionFor(file, mode, layout).rowForAnchor(anchor),
       scopeLabel: () => this.scopeLabelForSource(this.state.selectedSourceId),
       composerRows: ({ file, composing, mode }) =>
         this.composerRows(file, composing, mode, layout),
@@ -902,44 +900,50 @@ export class SourceControlView extends VStack {
     );
   }
 
-  private rowForAnchor(
+  private projectionFor(
     file: ChangedFile,
-    anchor: LineAnchor,
     mode: ReviewSessionState["viewMode"],
     layout: Layout,
-  ): number {
-    const horizontalOffset = this.state.horizontalOffsetByFile.get(file.id) ?? 0;
-    if (mode === "side-by-side") {
-      return buildSideBySideRows(
-        file,
-        this.styler,
-        this.diffWidth(layout),
-        horizontalOffset,
-        undefined,
-        true,
-        this.commentsForFile(file),
-        this.composingForFile(file),
-      ).findIndex((row) =>
-        row.anchors?.some((candidate) => anchorEquals(candidate, anchor)) ??
-        anchorEquals(row.anchor, anchor)
-      );
-    }
-    return buildUnifiedRows(
-      file,
-      this.styler,
-      Math.max(0, this.diffWidth(layout) - UNIFIED_GUTTER_WIDTH),
+    composing = this.composingForFile(file),
+    composerVersion = this.composerVersion,
+  ): Projection {
+    const horizontalOffset = this.state?.horizontalOffsetByFile.get(file.id) ?? 0;
+    const key: ProjectionKey = {
+      fileId: file.id,
+      fingerprint: file.patchFingerprint,
+      mode,
+      width: mode === "side-by-side"
+        ? this.diffWidth(layout)
+        : Math.max(0, this.diffWidth(layout) - UNIFIED_GUTTER_WIDTH),
       horizontalOffset,
-      undefined,
-      true,
-      this.commentsForFile(file),
-      this.composingForFile(file),
-    ).findIndex((row) => anchorEquals(row.anchor, anchor));
+      commentsVersion: this.commentsVersion,
+      composerVersion,
+    };
+    this.projectionComments = this.commentsForFile(file);
+    this.projectionComposer = composing;
+    try {
+      return this.projectionCache.get(key, file);
+    } finally {
+      this.projectionComments = [];
+      this.projectionComposer = undefined;
+    }
+  }
+
+  private buildProjection(key: ProjectionKey, file: ChangedFile): Projection {
+    return buildDiffProjection({
+      file,
+      mode: key.mode,
+      width: key.width,
+      horizontalOffset: key.horizontalOffset,
+      comments: this.projectionComments,
+      composing: this.projectionComposer,
+    });
   }
 
   private composingForFile(
     file: ChangedFile | undefined,
   ): ComposingEditor | undefined {
-    const composing = this.state.composing;
+    const composing = this.state?.composing;
     if (file === undefined || composing?.fileId !== file.id) return undefined;
     return editorFor(composing);
   }
@@ -953,47 +957,23 @@ export class SourceControlView extends VStack {
     mode: ReviewSessionState["viewMode"],
     layout: Layout,
   ): ComposerRows | undefined {
-    const editor = editorFor(composing);
-    const horizontalOffset = this.state.horizontalOffsetByFile.get(file.id) ?? 0;
-    const comments = this.commentsForFile(file);
-    const rows: ComposerRowSpan[] = mode === "side-by-side"
-      ? buildSideBySideRows(
-          file,
-          this.styler,
-          this.diffWidth(layout),
-          horizontalOffset,
-          undefined,
-          true,
-          comments,
-          editor,
-        )
-      : buildUnifiedRows(
-          file,
-          this.styler,
-          Math.max(0, this.diffWidth(layout) - UNIFIED_GUTTER_WIDTH),
-          horizontalOffset,
-          undefined,
-          true,
-          comments,
-          editor,
-        );
-    const anchorRow = rows.findIndex((row) =>
-      row.anchors?.some((candidate) => anchorEquals(candidate, composing.anchor)) ??
-      anchorEquals(row.anchor, composing.anchor)
-    );
-    if (anchorRow < 0) return undefined;
-
-    // Comment and composer rows both sit directly under the anchored line, and
-    // the composer is always last, so the run ends on its hint row.
-    let lastRow = anchorRow;
-    while (rows[lastRow + 1]?.isComment === true) lastRow += 1;
-    return { anchorRow, lastRow, rowCount: rows.length };
+    const composerVersion = composing === this.state.composing
+      ? this.composerVersion
+      : this.composerVersion + 1;
+    return this.projectionFor(
+      file,
+      mode,
+      layout,
+      editorFor(composing),
+      composerVersion,
+    )
+      .composerSpan;
   }
 
   private commentsForFile(
     file: ChangedFile | undefined,
   ): readonly ReviewComment[] {
-    if (file === undefined) return [];
+    if (file === undefined || this.state === undefined) return [];
     const scopeLabel = this.scopeLabelForSource(this.state.selectedSourceId);
     return this.state.comments.filter(
       (comment) =>
@@ -1319,6 +1299,8 @@ export class SourceControlView extends VStack {
         else cursorByFile.set(selectedFile.id, firstAnchor);
       }
     }
+    if (comments !== this.state.comments) this.commentsVersion += 1;
+    if (keptComposing !== this.state.composing) this.composerVersion += 1;
     this.state = {
       ...this.state,
       selectedSourceId,
