@@ -5,7 +5,28 @@ import {
   parseLogOutput,
   readRecentCommits,
 } from "../../src/git/commit-history-reader.ts";
+import { readCommitMetadata } from "../../src/git/commit-review-reader.ts";
+import type { DiffReview } from "../../src/model/diff.ts";
+import { renderHeader } from "../../src/ui/review-header-renderer.ts";
+import { renderSourceList } from "../../src/ui/source-list-renderer.ts";
+import { plainStyler } from "../../src/ui/theme.ts";
 import { createTempRepo, type TempRepo } from "../helpers/temp-repo.ts";
+
+const ESC = "\u001b";
+const BEL = "\u0007";
+const REPLACEMENT = "\ufffd";
+
+function logOutput(subject: string, author: string): string {
+  return [
+    "a".repeat(40),
+    "abcdef0",
+    "",
+    author,
+    "2026-08-25T12:00:00-07:00",
+    subject,
+    "",
+  ].join("\0");
+}
 
 describe("commit history reader", () => {
   let repo: TempRepo;
@@ -92,5 +113,74 @@ describe("commit history reader", () => {
         parentOids: [parent],
       },
     ]);
+  });
+
+  it("a hostile commit subject cannot reach the source list or the header", async () => {
+    const hostile =
+      `subject-A${ESC}]52;c;cGF5bG9hZA==${BEL}B${ESC}]0 title${BEL}C${ESC}[31m\rF\u009b31mG-end`;
+    const safe = `subject-ABC${REPLACEMENT}F${REPLACEMENT}31mG-end`;
+    const raw = logOutput(hostile, "Safe Author");
+    const source = parseLogOutput(raw)[0]!;
+    const metadata = await readCommitMetadata({
+      run: async () => ({ stdout: raw, stderr: "", code: 0 }),
+    }, source.commitOid);
+    const review: DiffReview = {
+      repositoryRoot: "/repo",
+      scope: {
+        kind: "commit",
+        requestedRevision: "HEAD",
+        commitOid: source.commitOid,
+        parentCount: 0,
+      },
+      groups: [],
+      metadata,
+      generatedAt: 0,
+    };
+
+    const sourceRows = renderSourceList({
+      items: [source],
+      counts: {},
+      selectedId: source.id,
+      focused: true,
+      scrollOffset: 0,
+      maxRows: 1,
+    }, 160, plainStyler).lines.join("\n");
+    const header = renderHeader(
+      review,
+      undefined,
+      "unified",
+      160,
+      plainStyler,
+    ).join("\n");
+
+    expect(source.subject).toBe(safe);
+    expect(metadata.subject).toBe(safe);
+    expect(sourceRows).toContain(safe);
+    expect(header).toContain(safe);
+    for (const rendered of [sourceRows, header]) {
+      expect(rendered).not.toContain(ESC);
+      expect(rendered).not.toContain(BEL);
+      expect(rendered).not.toContain("\r");
+      expect(rendered).not.toContain("\u009b");
+    }
+  });
+
+  it("a hostile author name is inert in both commit readers", async () => {
+    const hostile =
+      `author-A${ESC}]52;c;cGF5bG9hZA==${BEL}B${ESC}]0 title${BEL}C${ESC}[31m\rF\u009b31mG-end`;
+    const safe = `author-ABC${REPLACEMENT}F${REPLACEMENT}31mG-end`;
+    const raw = logOutput("Safe subject", hostile);
+
+    const source = parseLogOutput(raw)[0]!;
+    const metadata = await readCommitMetadata({
+      run: async () => ({ stdout: raw, stderr: "", code: 0 }),
+    }, source.commitOid);
+
+    expect(source.author).toBe(safe);
+    expect(metadata.authorName).toBe(safe);
+    expect(JSON.stringify([source, metadata])).not.toContain(ESC);
+    expect(JSON.stringify([source, metadata])).not.toContain(BEL);
+    expect(JSON.stringify([source, metadata])).not.toContain("\r");
+    expect(JSON.stringify([source, metadata])).not.toContain("\u009b");
   });
 });

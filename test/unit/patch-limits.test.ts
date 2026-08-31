@@ -33,6 +33,37 @@ describe("patch limits", () => {
     ]);
   });
 
+  it("a file exactly at the byte cap is not oversized", () => {
+    const rawPatch = [
+      "diff --git a/exact.ts b/exact.ts",
+      "index 1111111..2222222 100644",
+      "--- a/exact.ts",
+      "+++ b/exact.ts",
+      "@@ -1,1 +1,1 @@",
+      "-before",
+      "+after",
+      "",
+    ].join("\n");
+    const byteLength = Buffer.byteLength(rawPatch);
+
+    const files = applyPatchLimit(
+      rawPatch,
+      "commit",
+      createPatchBudget(byteLength),
+      byteLength,
+    );
+
+    expect(files).toMatchObject([
+      {
+        newPath: "exact.ts",
+        isOversized: false,
+        additions: 1,
+        deletions: 1,
+      },
+    ]);
+    expect(files[0]?.hunks).toHaveLength(1);
+  });
+
   it("untracked file reads are limited to 8 concurrent operations", async () => {
     let active = 0;
     let maximum = 0;

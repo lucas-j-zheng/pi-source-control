@@ -148,6 +148,44 @@ function renderAll(width: number, styler: Styler): string[] {
 }
 
 describe("hostile diff content reaching the terminal", () => {
+  it("a hunk header carrying control bytes still parses into a hunk", () => {
+    const hostileHeader = [
+      "diff --git a/src/header.ts b/src/header.ts",
+      "--- a/src/header.ts",
+      "+++ b/src/header.ts",
+      `@@ -1,1 +1,1 @@ function A${ESC}]52;c;cGF5bG9hZA==${BEL}B${ESC}]0;pwned${BEL}C${ESC}[31mD\rE\u009b31mF() {`,
+      "-  return 1;",
+      "+  return 2;",
+      "",
+    ].join("\n");
+
+    const [file] = parseUnifiedDiff(hostileHeader, { group: "working" });
+
+    expect(file?.hunks).toHaveLength(1);
+    expect(file?.hunks[0]).toMatchObject({
+      oldStart: 1,
+      oldCount: 1,
+      newStart: 1,
+      newCount: 1,
+      header: `@@ -1,1 +1,1 @@ function ABCD${REPLACEMENT}E${REPLACEMENT}31mF() {`,
+    });
+    expect(file?.hunks[0]?.lines).toHaveLength(2);
+    const rendered = renderUnifiedDiff(
+      { file: file!, verticalOffset: 0, horizontalOffset: 0, height: 10 },
+      160,
+      plainStyler,
+    ).join("\n");
+    expect(rendered).toContain(
+      `function ABCD${REPLACEMENT}E${REPLACEMENT}31mF() {`,
+    );
+    for (const output of [JSON.stringify(file?.hunks[0]), rendered]) {
+      expect(output).not.toContain(ESC);
+      expect(output).not.toContain(BEL);
+      expect(output).not.toContain("\r");
+      expect(output).not.toContain("\u009b");
+    }
+  });
+
   it("renders with no escape byte in any row", () => {
     const [file] = parseUnifiedDiff(HOSTILE_PATCH, { group: "working" });
 

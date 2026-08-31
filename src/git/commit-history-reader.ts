@@ -1,4 +1,5 @@
 import type { SourceListItem } from "../model/diff.ts";
+import { sanitizeLabel } from "../diff/sanitize.ts";
 import {
   GitReviewError,
   type GitRunner,
@@ -25,9 +26,9 @@ export function parseLogOutput(raw: string): CommitSource[] {
 
     const shortOid = fields[offset + 1] ?? "";
     const parents = fields[offset + 2] ?? "";
-    const author = fields[offset + 3] ?? "";
+    const author = sanitizeLabel(fields[offset + 3] ?? "");
     const authoredAt = fields[offset + 4] ?? "";
-    const subject = fields[offset + 5] ?? "";
+    const subject = sanitizeLabel(fields[offset + 5] ?? "");
 
     commits.push({
       kind: "commit",

@@ -37,7 +37,12 @@ export function parseUnifiedDiff(raw: string, options: ParseOptions): ChangedFil
 }
 
 function parseFileChunk(rawPatch: string, group: DiffGroupId): ChangedFile {
-  const lines = splitLines(rawPatch);
+  // Structural parsing must only inspect inert text. In particular, a bare CR
+  // is a JavaScript line terminator, so leaving one in a hunk header makes the
+  // header regex miss a real hunk and hides the diff from review. Keep the raw
+  // patch separately for its lossless fingerprint, but sanitize every parsed
+  // line before any prefix or regex match.
+  const lines = splitLines(rawPatch).map(sanitizeContent);
   const firstLine = lines[0];
   if (firstLine === undefined) {
     throw new DiffParseError("Diff file chunk is empty");
@@ -201,7 +206,7 @@ function parseHunks(lines: string[], file: string): DiffHunk[] {
       const newStart = Number(headerMatch[3]);
       current = {
         index: hunks.length,
-        header: sanitizeContent(line),
+        header: line,
         oldStart,
         oldCount: headerMatch[2] === undefined ? 1 : Number(headerMatch[2]),
         newStart,
@@ -243,9 +248,9 @@ function parseHunkLine(
   nearHunk: string,
 ): { line: DiffLine; oldIncrement: number; newIncrement: number } {
   const marker = source[0];
-  // The model is sanitized here, at the parse boundary, so every consumer —
-  // renderers, review comments, the agent message — inherits clean text.
-  const content = source === "" ? "" : sanitizeContent(source.slice(1));
+  // `parseFileChunk` sanitized the complete source line before any structural
+  // matching, so the content stored in the model is already inert too.
+  const content = source === "" ? "" : source.slice(1);
 
   if (source === "" || marker === " ") {
     return {

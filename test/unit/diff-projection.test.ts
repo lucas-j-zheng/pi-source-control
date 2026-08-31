@@ -81,6 +81,34 @@ describe("diff projection", () => {
     expect(builds).toBe(5);
   });
 
+  it("a changed file id cannot reuse another file's projection", () => {
+    expectChangedKeyRebuilds("fileId", "working:another-file.ts");
+  });
+
+  it("a changed mode cannot reuse the previous layout's projection", () => {
+    expectChangedKeyRebuilds("mode", "side-by-side");
+  });
+
+  it("a changed comments version cannot reuse stale comment rows", () => {
+    expectChangedKeyRebuilds("commentsVersion", 1);
+  });
+
+  it("horizontal scrolling reuses projection geometry", () => {
+    const file = generatedFile(4, 8);
+    let builds = 0;
+    const cache = createProjectionCache(() => {
+      builds += 1;
+      return projectionMarker(builds);
+    });
+    const key = projectionKey(file);
+
+    const first = cache.get(key, file);
+    const scrolled = cache.get({ ...key, horizontalOffset: 12 }, file);
+
+    expect(scrolled).toBe(first);
+    expect(builds).toBe(1);
+  });
+
   it("rowForAnchor matches the renderer's row for every anchor", () => {
     for (let seed = 1; seed <= 20; seed += 1) {
       const file = generatedFile(seed, 10 + seed);
@@ -246,6 +274,34 @@ function projectionKey(file: ChangedFile): ProjectionKey {
     horizontalOffset: 0,
     commentsVersion: 0,
     composerVersion: 0,
+  };
+}
+
+function expectChangedKeyRebuilds<K extends keyof ProjectionKey>(
+  field: K,
+  value: ProjectionKey[K],
+): void {
+  const file = generatedFile(3, 8);
+  let builds = 0;
+  const cache = createProjectionCache(() => {
+    builds += 1;
+    return projectionMarker(builds);
+  });
+  const key = projectionKey(file);
+
+  const first = cache.get(key, file);
+  const changed = cache.get({ ...key, [field]: value }, file);
+
+  expect(changed).not.toBe(first);
+  expect(changed.rowCount).toBe(2);
+  expect(builds).toBe(2);
+}
+
+function projectionMarker(rowCount: number) {
+  return {
+    rowCount,
+    rowForAnchor: () => -1,
+    anchors: [],
   };
 }
 

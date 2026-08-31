@@ -134,11 +134,12 @@ export function buildDiffProjection(input: ProjectionInput): Projection {
 }
 
 function keysEqual(left: ProjectionKey, right: ProjectionKey): boolean {
+  // Horizontal slicing changes visible text but never row or anchor geometry,
+  // which is the only data a projection retains.
   return left.fileId === right.fileId &&
     left.fingerprint === right.fingerprint &&
     left.mode === right.mode &&
     left.width === right.width &&
-    left.horizontalOffset === right.horizontalOffset &&
     left.commentsVersion === right.commentsVersion &&
     left.composerVersion === right.composerVersion;
 }
