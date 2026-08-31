@@ -59,3 +59,47 @@ Streaming or capping git stdout (spec 29). Resolving `git` to an absolute path. 
 
 ## Done when
 `pnpm check` exits 0 with 6 new tests passing and all 298 existing tests passing.
+
+## Fixes
+
+The spec above is implemented, but two of its guarantees do not hold in production. Address both.
+
+### Fix 1 — the env pins are inert under the shipped Pi
+
+The installed Pi's `ExecOptions` is `{ signal?, timeout?, cwd? }` and `execCommand` never forwards
+`env` to `spawn`, so `env: GIT_ENV` from `createPiGitRunner` has no effect today. `git status` can
+therefore still refresh and rewrite `.git/index`, which is the behavior finding 5 of
+`reviews/full-review-2026-08-30.md` proved (`.git/index` sha changed `3b97159` → `7170ae2`).
+
+- Keep `env: GIT_ENV` (harmless, and correct if Pi gains support), but do not rely on it.
+- Add git's **global** `--no-optional-locks` flag ahead of the subcommand for every invocation, which
+  is the argv-level equivalent of `GIT_OPTIONAL_LOCKS=0` and needs no env support.
+- `assertReadOnly` currently validates `args[0]`. It must now skip a **fixed allowlist of global
+  flags** (`--no-optional-locks`, `--no-pager` only — no `-c`, no `--exec-path`, nothing that takes a
+  value) and validate the first non-flag token instead. This is the package's central safety
+  guarantee: it must reject `["-c","core.fsmonitor=x","status"]`, `["--exec-path=/tmp","diff"]`, an
+  argv of flags with no subcommand, and every previously rejected case.
+- `LC_ALL=C` has no argv equivalent, so the two English-literal checks must stop depending on it:
+  binary detection in `src/diff/unified-parser.ts` and the empty-repository stderr match in
+  `src/git/commit-history-reader.ts`. Match on structure where possible (for the empty repo, prefer
+  the `rev-parse --verify --quiet HEAD` exit status over stderr text) and keep the English match only
+  as a fallback.
+
+### Fix 2 — `--default-prefix` narrows the supported git range
+
+`--default-prefix` requires git >= 2.41 (June 2023) and the package declares no git requirement.
+Replace it in `GIT_SAFE_DIFF_FLAGS` with the long-standing `--src-prefix=a/ --dst-prefix=b/`, which
+pins the same prefixes on every git that supports `--no-ext-diff`.
+
+### Tests
+`test/unit/git-execution.test.ts`
+- "every git invocation carries --no-optional-locks"
+- "assertReadOnly accepts a leading global flag and still validates the subcommand"
+- "assertReadOnly rejects -c, --exec-path, a value-taking flag, and a flags-only argv"
+- "patch commands pin the prefixes on older git" — argv asserts `--src-prefix=a/`, `--dst-prefix=b/`
+`test/unit/commit-history-reader.test.ts` (create if absent)
+- "an empty repository is detected without relying on English stderr"
+
+### Done when
+`pnpm check` exits 0 with 5 further tests passing, and an integration test asserts `.git/index` is
+byte-identical before and after a `/diff` open on a repo with stale stat data.
