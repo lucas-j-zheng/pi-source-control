@@ -64,3 +64,37 @@ readable text such as `^[`. Any change to how comments are delivered (spec 30).
 ## Done when
 `pnpm check` exits 0 with 8 new tests passing and all existing tests passing, and a fixture repo
 whose diff contains OSC 52 renders with no escape byte in the output rows.
+
+## Fixes
+
+Adversarial verification after implementation found two gaps. Both are reachable from a repository
+an installer merely opens.
+
+### Fix 1 — sanitize before matching, so hostile bytes cannot hide a diff
+
+`src/diff/unified-parser.ts` sanitizes the hunk header *after* matching it, so a bare CR inside
+`@@ -3,5 +3,6 @@ int header(void) {` prevents the header regex from matching at all. The file then
+parses to `hunks.length === 0` and the reviewer renders **"No textual changes."** — a real change is
+silently hidden from review, which is worse than an escape reaching the terminal.
+
+- Sanitize each patch line before structural matching, not after, so control bytes can never change
+  how the patch is parsed. Verify that a hunk header carrying OSC, CSI, CR and U+009B still yields
+  the correct hunk, with the sequences removed from the rendered header.
+
+### Fix 2 — commit metadata is repository-controlled too
+
+`parseLogOutput` (`src/git/commit-history-reader.ts:28`) and the commit reader's metadata keep the
+raw subject and author. The subject reaches the terminal live through
+`src/ui/source-list-renderer.ts:50` and `src/ui/review-header-renderer.ts:40`.
+
+- Apply `sanitizeLabel` to commit subject and author in both readers, at the parse boundary.
+
+### Tests
+`test/unit/sanitize.test.ts` (or the parser/reader test files)
+- "a hunk header carrying control bytes still parses into a hunk"
+- "a hostile commit subject cannot reach the source list or the header"
+- "a hostile author name is inert"
+
+### Done when
+`pnpm check` exits 0 with 3 further tests passing, and a fixture repo whose commit subject, author
+and hunk header all carry OSC/CSI/CR/U+009B renders no ESC byte and still shows the diff.
