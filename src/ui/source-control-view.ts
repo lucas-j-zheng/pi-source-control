@@ -18,6 +18,7 @@ import {
 import {
   anchorEquals,
   createInitialState,
+  fileKey,
   reduce,
   type ComposerRows,
   type ComposingComment,
@@ -123,6 +124,10 @@ function editorFor(composing: ComposingComment): ComposingEditor {
 function errorNotice(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.split(/\r?\n/u)[0] || "Unable to load source";
+}
+
+function commentTargetKey(comment: ReviewComment): string {
+  return `${fileKey(comment.scopeLabel, comment.fileId)}\0${comment.anchor.hunkIndex}:${comment.anchor.lineIndex}`;
 }
 
 function fitLine(text: string, width: number): string {
@@ -407,6 +412,10 @@ export class SourceControlView extends VStack {
     });
     const entry = { lines, hitTargets: this.hitTargets, layout };
     this.renderCache.set(cacheKey, entry);
+    if (this.renderCache.size > 4) {
+      const oldest = this.renderCache.keys().next().value;
+      if (oldest !== undefined) this.renderCache.delete(oldest);
+    }
     return lines;
   }
 
@@ -648,11 +657,18 @@ export class SourceControlView extends VStack {
     const verticalOffset =
       selectedFile === undefined
         ? 0
-        : (this.state.verticalOffsetByFile.get(selectedFile.id) ?? 0);
+        : (this.state.verticalOffsetByFile.get(
+            this.fileKeyForSource(this.state.selectedSourceId, selectedFile.id),
+          ) ?? 0);
     const horizontalOffset =
       selectedFile === undefined
         ? 0
-        : (this.state.horizontalOffsetByFile.get(selectedFile.id) ?? 0);
+        : (this.state.horizontalOffsetByFile.get(
+            this.fileKeyForSource(this.state.selectedSourceId, selectedFile.id),
+          ) ?? 0);
+    const selectedKey = selectedFile === undefined
+      ? undefined
+      : this.fileKeyForSource(this.state.selectedSourceId, selectedFile.id);
     const input = {
       file: selectedFile,
       verticalOffset,
@@ -661,7 +677,7 @@ export class SourceControlView extends VStack {
       cursor:
         selectedFile === undefined
           ? undefined
-          : this.state.cursorByFile.get(selectedFile.id),
+          : this.state.cursorByFile.get(selectedKey!),
       focused: this.state.focusedPane === "diff",
     };
     const comments = this.commentsForFile(selectedFile);
@@ -680,9 +696,13 @@ export class SourceControlView extends VStack {
     const placeholder = placeholderFor(selectedFile);
     if (placeholder !== undefined) return [fitLine(placeholder, width)];
 
+    const selectedKey = this.fileKeyForSource(
+      this.state.selectedSourceId,
+      selectedFile!.id,
+    );
     const horizontalOffset =
-      this.state.horizontalOffsetByFile.get(selectedFile!.id) ?? 0;
-    const cursor = this.state.cursorByFile.get(selectedFile!.id);
+      this.state.horizontalOffsetByFile.get(selectedKey) ?? 0;
+    const cursor = this.state.cursorByFile.get(selectedKey);
     const focused = this.state.focusedPane === "diff";
     const comments = this.commentsForFile(selectedFile);
     const composing = this.composingForFile(selectedFile);
@@ -848,7 +868,9 @@ export class SourceControlView extends VStack {
     this.fullscreenPanes.diff.setDesiredScrollTop(
       selectedFileId === undefined
         ? 0
-        : (this.state.verticalOffsetByFile.get(selectedFileId) ?? 0),
+        : (this.state.verticalOffsetByFile.get(
+            this.fileKeyForSource(this.state.selectedSourceId, selectedFileId),
+          ) ?? 0),
     );
   }
 
@@ -876,7 +898,8 @@ export class SourceControlView extends VStack {
       },
       rowForAnchor: (file, anchor, mode) =>
         this.projectionFor(file, mode, layout).rowForAnchor(anchor),
-      scopeLabel: () => this.scopeLabelForSource(this.state.selectedSourceId),
+      scopeLabel: (sourceId) =>
+        this.scopeLabelForSource(sourceId ?? this.state.selectedSourceId),
       composerRows: ({ file, composing, mode }) =>
         this.composerRows(file, composing, mode, layout),
       createComment: ({ file, anchor, body }) =>
@@ -907,9 +930,14 @@ export class SourceControlView extends VStack {
     composing = this.composingForFile(file),
     composerVersion = this.composerVersion,
   ): Projection {
-    const horizontalOffset = this.state?.horizontalOffsetByFile.get(file.id) ?? 0;
+    const scopedFileId = this.fileKeyForSource(
+      this.state?.selectedSourceId ?? this.sources[0]?.id ?? "",
+      file.id,
+    );
+    const horizontalOffset =
+      this.state?.horizontalOffsetByFile.get(scopedFileId) ?? 0;
     const key: ProjectionKey = {
-      fileId: file.id,
+      fileId: scopedFileId,
       fingerprint: file.patchFingerprint,
       mode,
       width: mode === "side-by-side"
@@ -1110,7 +1138,16 @@ export class SourceControlView extends VStack {
           return;
         }
         this.loadingSourceIds.delete(source.id);
+        this.attemptedSourceIds.delete(source.id);
+        if (this.state.pendingSourceId === source.id) {
+          this.state = {
+            ...this.state,
+            pendingSourceId: undefined,
+            version: this.state.version + 1,
+          };
+        }
         this.setNotice(errorNotice(error));
+        this.syncFullscreenScrollOffsets();
         this.host.requestRender();
       })
       .finally(() => {
@@ -1133,14 +1170,17 @@ export class SourceControlView extends VStack {
       }
     }
     let cursorByFile = this.state.cursorByFile;
+    const selectedKey = selectedFile === undefined
+      ? undefined
+      : this.fileKeyForSource(sourceId, selectedFile.id);
     if (
       selectedFile !== undefined &&
-      cursorByFile.get(selectedFile.id) === undefined
+      cursorByFile.get(selectedKey!) === undefined
     ) {
       const firstAnchor = this.lineAnchors(selectedFile)[0];
       if (firstAnchor !== undefined) {
         cursorByFile = new Map(cursorByFile);
-        cursorByFile.set(selectedFile.id, firstAnchor);
+        cursorByFile.set(selectedKey!, firstAnchor);
       }
     }
     this.state = {
@@ -1171,8 +1211,22 @@ export class SourceControlView extends VStack {
   private startRefresh(): void {
     if (this.disposed) return;
     this.operationEpoch += 1;
+    const abortedSourceIds = [...this.loadingSourceIds];
     this.abortControllers();
+    for (const sourceId of abortedSourceIds) {
+      this.attemptedSourceIds.delete(sourceId);
+    }
     this.loadingSourceIds.clear();
+    if (
+      this.state.pendingSourceId !== undefined &&
+      abortedSourceIds.includes(this.state.pendingSourceId)
+    ) {
+      this.state = {
+        ...this.state,
+        pendingSourceId: undefined,
+        version: this.state.version + 1,
+      };
+    }
     const epoch = this.operationEpoch;
     const controller = new AbortController();
     this.controllers.add(controller);
@@ -1229,7 +1283,7 @@ export class SourceControlView extends VStack {
     ];
     const previousFingerprints = new Map(
       this.state.comments.map((comment) => [
-        comment.id,
+        commentTargetKey(comment),
         this.fingerprintForComment(comment, previousReviews),
       ]),
     );
@@ -1266,7 +1320,9 @@ export class SourceControlView extends VStack {
       ),
     );
     const comments = this.state.comments.filter((comment) => {
-      const previousFingerprint = previousFingerprints.get(comment.id);
+      const previousFingerprint = previousFingerprints.get(
+        commentTargetKey(comment),
+      );
       const currentFingerprint = this.fingerprintForComment(
         comment,
         currentReviews,
@@ -1291,12 +1347,16 @@ export class SourceControlView extends VStack {
     }
     const cursorByFile = new Map(this.state.cursorByFile);
     if (selectedFile !== undefined) {
+      const selectedKey = this.fileKeyForSource(
+        selectedSourceId,
+        selectedFile.id,
+      );
       const anchors = this.lineAnchors(selectedFile);
-      const current = cursorByFile.get(selectedFile.id);
+      const current = cursorByFile.get(selectedKey);
       if (!anchors.some((anchor) => anchorEquals(anchor, current))) {
         const firstAnchor = anchors[0];
-        if (firstAnchor === undefined) cursorByFile.delete(selectedFile.id);
-        else cursorByFile.set(selectedFile.id, firstAnchor);
+        if (firstAnchor === undefined) cursorByFile.delete(selectedKey);
+        else cursorByFile.set(selectedKey, firstAnchor);
       }
     }
     if (comments !== this.state.comments) this.commentsVersion += 1;
@@ -1355,6 +1415,10 @@ export class SourceControlView extends VStack {
     return describeScope(this.reviewForSource(sourceId));
   }
 
+  private fileKeyForSource(sourceId: string, fileId: string): string {
+    return fileKey(this.scopeLabelForSource(sourceId), fileId);
+  }
+
   private fingerprintForComment(
     comment: ReviewComment,
     reviews: DiffReview[],
@@ -1373,10 +1437,10 @@ export class SourceControlView extends VStack {
   }
 
   private setNotice(notice: string): void {
-    if (this.state.notice === notice) return;
     this.state = {
       ...this.state,
       notice,
+      discardCommentsArmed: false,
       version: this.state.version + 1,
     };
   }

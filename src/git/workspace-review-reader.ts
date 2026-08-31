@@ -1,4 +1,4 @@
-import { fingerprintPatch } from "../diff/patch-fingerprint.ts";
+import { fingerprintFilePatch } from "../diff/patch-fingerprint.ts";
 import type {
   ChangedFile,
   DiffGroupId,
@@ -165,7 +165,7 @@ function statusOnlyFile(group: DiffGroupId, newPath: string): ChangedFile {
     isBinary: false,
     isOversized: false,
     rawPatch,
-    patchFingerprint: fingerprintPatch(rawPatch),
+    patchFingerprint: fingerprintFilePatch(rawPatch, "unmerged", newPath),
     hunks: [],
   };
 }

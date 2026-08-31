@@ -97,7 +97,7 @@ describe("review comments", () => {
     });
 
     expect(result).toMatchObject({
-      id: "working:src/example.ts:0:2",
+      id: "working tree\0working:src/example.ts\0" + "0:2",
       filePath: "src/example.ts",
       oldLineNumber: undefined,
       newLineNumber: 21,

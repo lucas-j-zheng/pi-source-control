@@ -1,4 +1,4 @@
-import { fingerprintPatch } from "../diff/patch-fingerprint.ts";
+import { fingerprintFilePatch } from "../diff/patch-fingerprint.ts";
 import {
   parseUnifiedDiff,
   splitPatchByFile,
@@ -85,7 +85,7 @@ function oversizedPlaceholder(
     deletions: 0,
     isOversized: true,
     rawPatch: "",
-    patchFingerprint: fingerprintPatch(rawPatch),
+    patchFingerprint: fingerprintFilePatch("", parsed.status, parsed.newPath),
     hunks: [],
   };
 }

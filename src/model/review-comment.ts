@@ -89,7 +89,8 @@ export function buildComment(input: {
     .join("\n");
 
   return {
-    id: `${input.file.id}:${input.anchor.hunkIndex}:${input.anchor.lineIndex}`,
+    id:
+      `${input.scopeLabel}\0${input.file.id}\0${input.anchor.hunkIndex}:${input.anchor.lineIndex}`,
     fileId: input.file.id,
     filePath: input.file.newPath,
     anchor: { ...input.anchor },

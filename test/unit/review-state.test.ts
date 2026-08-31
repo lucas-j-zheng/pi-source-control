@@ -1,13 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { applyStatusToFiles } from "../../src/git/workspace-review-reader.ts";
 import type {
   ChangedFile,
   DiffGroupId,
+  DiffReview,
   SourceListItem,
 } from "../../src/model/diff.ts";
 import type { ReviewComment } from "../../src/model/review-comment.ts";
 import {
   createInitialState,
+  fileKey,
   reduce,
   type LineAnchor,
   type ReviewEnv,
@@ -152,7 +155,7 @@ function composedComment(
   overrides: Partial<ReviewComment> = {},
 ): ReviewComment {
   return {
-    id: "working:file-0:0:0",
+    id: "working tree\0working:file-0\0" + "0:0",
     fileId: "working:file-0",
     filePath: "working/file-0.ts",
     anchor: { hunkIndex: 0, lineIndex: 0 },
@@ -171,7 +174,8 @@ function composingEnv(scopeLabel = "working tree"): ReviewEnv {
     ...fakeEnv({ scopeLabel }),
     createComment: ({ file, anchor, body }) =>
       composedComment({
-        id: `${file.id}:${anchor.hunkIndex}:${anchor.lineIndex}`,
+        id:
+          `${scopeLabel}\0${file.id}\0${anchor.hunkIndex}:${anchor.lineIndex}`,
         fileId: file.id,
         filePath: file.newPath,
         anchor,
@@ -190,9 +194,13 @@ function apply(
   return reduce(state, action, env).state;
 }
 
+function workingFileKey(fileId = "working:file-0"): string {
+  return fileKey("working tree", fileId);
+}
+
 function reviewComment(overrides: Partial<ReviewComment> = {}): ReviewComment {
   return {
-    id: "working:file-0:0:0",
+    id: "working tree\0working:file-0\0" + "0:0",
     fileId: "working:file-0",
     filePath: "working/file-0.ts",
     anchor: { hunkIndex: 0, lineIndex: 0 },
@@ -219,7 +227,7 @@ describe("review state", () => {
       version: 0,
     });
     expect(state.selectedFileBySource.get("working")).toBe("working:file-0");
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 0,
     });
@@ -233,7 +241,7 @@ describe("review state", () => {
       env,
     );
 
-    expect(state.cursorByFile.get("working:file-1")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey("working:file-1"))).toEqual({
       hunkIndex: 0,
       lineIndex: 0,
     });
@@ -276,6 +284,58 @@ describe("review state", () => {
     expect(state.selectedFileId).toBe("working:file-2");
   });
 
+  it("the same path in two scopes keeps separate cursors and scroll offsets", () => {
+    const sharedFile: ChangedFile = {
+      ...changedFile("commit:one", 0),
+      id: "commit:src/shared.ts",
+      newPath: "src/shared.ts",
+    };
+    const base = fakeEnv();
+    const env: ReviewEnv = {
+      ...base,
+      sources: sources.slice(2),
+      filesForSource: (sourceId) =>
+        sourceId === "commit:one" || sourceId === "commit:two"
+          ? [sharedFile]
+          : [],
+      fileById: (fileId) => fileId === sharedFile.id ? sharedFile : undefined,
+      scopeLabel: (sourceId) =>
+        sourceId === "commit:two" ? "commit two (Two)" : "commit one (One)",
+    };
+    let state = createInitialState("commit:one", env);
+    state = apply(state, { type: "focus-diff" }, env);
+    state = apply(
+      state,
+      { type: "set-scroll", pane: "diff", offset: 5 },
+      env,
+    );
+    state = apply(state, { type: "scroll-horizontal", delta: 1 }, env);
+    const firstKey = fileKey("commit one (One)", sharedFile.id);
+    const firstCursor = state.cursorByFile.get(firstKey);
+
+    state = apply(
+      state,
+      { type: "select-source", sourceId: "commit:two" },
+      env,
+    );
+    state = apply(state, { type: "focus-diff" }, env);
+    state = apply(
+      state,
+      { type: "set-scroll", pane: "diff", offset: 2 },
+      env,
+    );
+    state = apply(state, { type: "move", delta: 1 }, env);
+    state = apply(state, { type: "scroll-horizontal", delta: 2 }, env);
+    const secondKey = fileKey("commit two (Two)", sharedFile.id);
+
+    expect(state.cursorByFile.get(firstKey)).toBe(firstCursor);
+    expect(state.cursorByFile.get(secondKey)).not.toEqual(firstCursor);
+    expect(state.verticalOffsetByFile.get(firstKey)).toBe(5);
+    expect(state.verticalOffsetByFile.get(secondKey)).toBe(2);
+    expect(state.horizontalOffsetByFile.get(firstKey)).toBe(8);
+    expect(state.horizontalOffsetByFile.get(secondKey)).toBe(16);
+  });
+
   it("file moves clamp at both ends", () => {
     const env = fakeEnv();
     let state = createInitialState("working", env);
@@ -294,18 +354,18 @@ describe("review state", () => {
     let state = createInitialState("working", env);
     state = apply(state, { type: "focus-diff" }, env);
     state = apply(state, { type: "move", delta: 1 }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 1,
     });
     state = apply(state, { type: "move", delta: 100 }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 2,
       lineIndex: 9,
     });
 
     state = apply(state, { type: "move", delta: -100 }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 0,
     });
@@ -316,22 +376,22 @@ describe("review state", () => {
     let state = createInitialState("working", env);
     state = apply(state, { type: "focus-diff" }, env);
     state = apply(state, { type: "page", delta: 1 }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 5,
     });
     state = apply(state, { type: "half-page", delta: 1 }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 8,
     });
     state = apply(state, { type: "end" }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 2,
       lineIndex: 9,
     });
     state = apply(state, { type: "home" }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 0,
     });
@@ -342,11 +402,11 @@ describe("review state", () => {
     let state = createInitialState("working", env);
     state = apply(state, { type: "focus-diff" }, env);
     state = apply(state, { type: "move", delta: 3 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0") ?? 0).toBe(0);
+    expect(state.verticalOffsetByFile.get(workingFileKey()) ?? 0).toBe(0);
     state = apply(state, { type: "move", delta: 1 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(1);
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(1);
     state = apply(state, { type: "move", delta: 1 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(2);
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(2);
   });
 
   it("half-page moves list selection by half the body height", () => {
@@ -372,17 +432,17 @@ describe("review state", () => {
 
     state = apply(state, { type: "focus-diff" }, env);
     state = apply(state, { type: "move", delta: 5 }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 5,
     });
     state = apply(state, { type: "move", delta: 100 }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 2,
       lineIndex: 9,
     });
     state = apply(state, { type: "move", delta: -100 }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 0,
     });
@@ -392,18 +452,18 @@ describe("review state", () => {
     const env = fakeEnv();
     let state = createInitialState("working", env);
     state = apply(state, { type: "next-hunk" }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 1,
       lineIndex: 0,
     });
-    expect(state.selectedHunkByFile.get("working:file-0")).toBe(1);
+    expect(state.selectedHunkByFile.get(workingFileKey())).toBe(1);
     state = apply(state, { type: "next-hunk" }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 2,
       lineIndex: 0,
     });
     state = apply(state, { type: "prev-hunk" }, env);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 1,
       lineIndex: 0,
     });
@@ -413,12 +473,12 @@ describe("review state", () => {
     const env = fakeEnv();
     let state = createInitialState("working", env);
     state = apply(state, { type: "focus-diff" }, env);
-    const cursor = state.cursorByFile.get("working:file-0");
+    const cursor = state.cursorByFile.get(workingFileKey());
 
     state = apply(state, { type: "scroll-view", delta: 1 }, env);
 
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(1);
-    expect(state.cursorByFile.get("working:file-0")).toBe(cursor);
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(1);
+    expect(state.cursorByFile.get(workingFileKey())).toBe(cursor);
   });
 
   it("scroll-view pulls the cursor into view once it would scroll off", () => {
@@ -427,16 +487,16 @@ describe("review state", () => {
     state = apply(state, { type: "focus-diff" }, env);
 
     state = apply(state, { type: "scroll-view", delta: 3 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(3);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(3);
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 1,
     });
 
     state = apply(state, { type: "move", delta: 7 }, env);
     state = apply(state, { type: "scroll-view", delta: -5 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(0);
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 3,
     });
@@ -452,7 +512,7 @@ describe("review state", () => {
 
     state = apply(state, { type: "scroll-view", delta: 3 }, env);
 
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 1,
     });
@@ -466,10 +526,10 @@ describe("review state", () => {
     state = apply(state, { type: "focus-diff" }, env);
 
     state = apply(state, { type: "scroll-view", delta: 100 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(34);
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(34);
 
     state = apply(state, { type: "scroll-view", delta: -100 }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(0);
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(0);
   });
 
   it("diff row count includes comment rows so scrolling clamps correctly", () => {
@@ -526,7 +586,7 @@ describe("review state", () => {
     subject.dispatch({ type: "focus-diff" });
     subject.dispatch({ type: "scroll-view", delta: 100 });
 
-    expect(subject.getState().verticalOffsetByFile.get(file.id)).toBe(7);
+    expect(subject.getState().verticalOffsetByFile.get(workingFileKey(file.id))).toBe(7);
   });
 
   it("scroll-view is a no-op on the source and file lists", () => {
@@ -569,8 +629,8 @@ describe("review state", () => {
       env,
     );
 
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(12);
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(12);
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 1,
       lineIndex: 0,
     });
@@ -580,7 +640,7 @@ describe("review state", () => {
       { type: "set-scroll", pane: "diff", offset: 0 },
       env,
     );
-    expect(state.cursorByFile.get("working:file-0")).toEqual({
+    expect(state.cursorByFile.get(workingFileKey())).toEqual({
       hunkIndex: 0,
       lineIndex: 3,
     });
@@ -591,12 +651,12 @@ describe("review state", () => {
     let state = createInitialState("working", env);
     state = apply(state, { type: "focus-diff" }, env);
     state = apply(state, { type: "move", delta: 7 }, env);
-    const cursor = state.cursorByFile.get("working:file-0");
+    const cursor = state.cursorByFile.get(workingFileKey());
 
     state = apply(state, { type: "toggle-view" }, env);
-    expect(state.cursorByFile.get("working:file-0")).toBe(cursor);
+    expect(state.cursorByFile.get(workingFileKey())).toBe(cursor);
     state = apply(state, { type: "toggle-view" }, env);
-    expect(state.cursorByFile.get("working:file-0")).toBe(cursor);
+    expect(state.cursorByFile.get(workingFileKey())).toBe(cursor);
   });
 
   it("focus cycles with Tab and Shift+Tab", () => {
@@ -659,11 +719,11 @@ describe("review state", () => {
       ]),
       sourceScrollOffset: 2,
       fileScrollOffset: 1,
-      verticalOffsetByFile: new Map([["staged:file-2", 12]]),
-      horizontalOffsetByFile: new Map([["staged:file-2", 8]]),
-      selectedHunkByFile: new Map([["staged:file-2", 1]]),
+      verticalOffsetByFile: new Map([[fileKey("staged changes", "staged:file-2"), 12]]),
+      horizontalOffsetByFile: new Map([[fileKey("staged changes", "staged:file-2"), 8]]),
+      selectedHunkByFile: new Map([[fileKey("staged changes", "staged:file-2"), 1]]),
       cursorByFile: new Map([
-        ["staged:file-2", { hunkIndex: 1, lineIndex: 4 }],
+        [fileKey("staged changes", "staged:file-2"), { hunkIndex: 1, lineIndex: 4 }],
       ]),
     };
     const preserved = {
@@ -698,6 +758,30 @@ describe("review state", () => {
     }
   });
 
+  it("close with queued comments warns first and discards only on the second press", () => {
+    const env = fakeEnv();
+    for (const action of [{ type: "close" }, { type: "back" }] as const) {
+      const queued = apply(
+        createInitialState("working", env),
+        { type: "add-comment", comment: reviewComment() },
+        env,
+      );
+
+      const warned = reduce(queued, action, env);
+      expect(warned.effects).toEqual([]);
+      expect(warned.state.comments).toHaveLength(1);
+      expect(warned.state.discardCommentsArmed).toBe(true);
+      expect(warned.state.notice).toBe(
+        "1 comment not submitted — S to send, q again to discard",
+      );
+
+      const discarded = reduce(warned.state, action, env);
+      expect(discarded.effects).toEqual([{ type: "close" }]);
+      expect(discarded.state.comments).toEqual([]);
+      expect(discarded.state.discardCommentsArmed).toBe(false);
+    }
+  });
+
   it("toggle-view is refused with a notice when side-by-side is not allowed", () => {
     const env = fakeEnv({ layout: computeLayout(90, 10) });
     const state = apply(createInitialState("working", env), { type: "toggle-view" }, env);
@@ -716,7 +800,7 @@ describe("review state", () => {
     state = apply(state, { type: "toggle-view" }, env);
 
     expect(state.viewMode).toBe("side-by-side");
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(4);
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(4);
   });
 
   it("toggle-reviewed keys on patch fingerprint", () => {
@@ -728,6 +812,37 @@ describe("review state", () => {
     );
     state = apply(state, { type: "toggle-reviewed" }, env);
     expect(state.reviewedFingerprints).toEqual(new Set());
+  });
+
+  it("placeholder files with empty patches are marked reviewed independently", () => {
+    const files = applyStatusToFiles(
+      [],
+      [
+        { index: "U", workTree: "U", path: "src/first.ts" },
+        { index: "U", workTree: "U", path: "src/second.ts" },
+      ],
+      "workTree",
+    );
+    const base = fakeEnv();
+    const env: ReviewEnv = {
+      ...base,
+      filesForSource: (sourceId) => sourceId === "working" ? files : [],
+      fileById: (fileId) => files.find((file) => file.id === fileId),
+    };
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "toggle-reviewed" }, env);
+    state = apply(
+      state,
+      { type: "select-file", fileId: files[1]!.id },
+      env,
+    );
+    state = apply(state, { type: "toggle-reviewed" }, env);
+
+    expect(files.every((file) => file.rawPatch === "")).toBe(true);
+    expect(new Set(files.map((file) => file.patchFingerprint)).size).toBe(2);
+    expect(state.reviewedFingerprints).toEqual(
+      new Set(files.map((file) => file.patchFingerprint)),
+    );
   });
 
   it("refresh emits a refresh effect", () => {
@@ -798,7 +913,7 @@ describe("review state", () => {
 
     expect(state.composing).toMatchObject({
       buffer: { text: "old", caret: 3 },
-      existingId: "working:file-0:0:0",
+      existingId: "working tree\0working:file-0\0" + "0:0",
     });
 
     state = apply(state, { type: "composing-key", data: "!" }, env);
@@ -818,16 +933,16 @@ describe("review state", () => {
     );
     state = apply(state, { type: "end" }, env);
     // The last line sits on row 33 of 40, so the viewport already ends there.
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(28);
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(28);
 
     state = apply(state, { type: "compose-comment" }, env);
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(30);
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(30);
 
     for (const data of "a longer draft") {
       state = apply(state, { type: "composing-key", data }, env);
     }
 
-    expect(state.verticalOffsetByFile.get("working:file-0")).toBe(31);
+    expect(state.verticalOffsetByFile.get(workingFileKey())).toBe(31);
   });
 
   it("a comment in another scope never prefills, replaces or deletes this one", () => {
@@ -841,6 +956,13 @@ describe("review state", () => {
     state = apply(state, { type: "composing-key", data: "w" }, workingScope);
     state = apply(state, { type: "composing-key", data: "\r" }, workingScope);
 
+    state = {
+      ...state,
+      cursorByFile: new Map(state.cursorByFile).set(
+        fileKey("commit one (One)", "working:file-0"),
+        { hunkIndex: 0, lineIndex: 0 },
+      ),
+    };
     state = apply(state, { type: "compose-comment" }, commitScope);
     expect(state.composing?.buffer).toEqual({ text: "", caret: 0 });
     expect(state.composing?.existingId).toBeUndefined();
@@ -1001,6 +1123,26 @@ describe("review state", () => {
     expect(result.state.comments).toEqual([]);
   });
 
+  it("submitting clears the discard warning", () => {
+    const env = fakeEnv();
+    let state = apply(
+      createInitialState("working", env),
+      { type: "add-comment", comment: reviewComment() },
+      env,
+    );
+    state = reduce(state, { type: "close" }, env).state;
+    expect(state.discardCommentsArmed).toBe(true);
+
+    const result = reduce(state, { type: "submit-comments" }, env);
+
+    expect(result.state.discardCommentsArmed).toBe(false);
+    expect(result.state.notice).toBeUndefined();
+    expect(result.effects.map((effect) => effect.type)).toEqual([
+      "submit-review",
+      "close",
+    ]);
+  });
+
   it("submit-review carries the number of comments being submitted", () => {
     const env = fakeEnv();
     let state = createInitialState("working", env);
@@ -1088,6 +1230,118 @@ describe("review state", () => {
     expect(subject.getState().notice).toBe(
       "1 comment dropped after refresh.",
     );
+  });
+
+  it("a comment in one commit is not dropped when another commit is refreshed", async () => {
+    const commitSources = sources.slice(2) as Extract<
+      SourceListItem,
+      { kind: "commit" }
+    >[];
+    const commentableFile = (
+      fingerprint: string,
+      content: string,
+    ): ChangedFile => ({
+      ...changedFile("commit:one", 0),
+      id: "commit:src/shared.ts",
+      group: "commit",
+      newPath: "src/shared.ts",
+      patchFingerprint: fingerprint,
+      hunks: [{
+        index: 0,
+        header: "@@ -0,0 +1 @@",
+        oldStart: 0,
+        oldCount: 0,
+        newStart: 1,
+        newCount: 1,
+        lines: [{ kind: "addition", content, newLineNumber: 1 }],
+      }],
+    });
+    const commitReviews = new Map(
+      commitSources.map((source, index): [string, DiffReview] => [
+        source.commitOid,
+        {
+          repositoryRoot: "/repo",
+          scope: {
+            kind: "commit",
+            requestedRevision: source.commitOid,
+            commitOid: source.commitOid,
+            parentCount: source.parentOids.length,
+          },
+          groups: [{
+            id: "commit",
+            title: "FILES CHANGED",
+            files: [commentableFile(`commit-${index}`, `line ${index}`)],
+          }],
+          metadata: {
+            oid: source.commitOid,
+            shortOid: source.shortOid,
+            subject: source.subject,
+            authorName: source.author,
+            authoredAt: source.authoredAt,
+            parentOids: source.parentOids,
+          },
+          generatedAt: index,
+        },
+      ]),
+    );
+    const workspace: DiffReview = {
+      repositoryRoot: "/repo",
+      scope: { kind: "workspace" },
+      groups: [
+        { id: "working", title: "Working Tree", files: [] },
+        { id: "staged", title: "Staged Changes", files: [] },
+      ],
+      generatedAt: 0,
+    };
+    const subject = new SourceControlView({
+      data: {
+        initialReview: workspace,
+        recentCommits: commitSources,
+        async loadCommit(commitOid) {
+          return commitReviews.get(commitOid)!;
+        },
+        async refresh() {
+          return { review: workspace, recentCommits: commitSources };
+        },
+      },
+      host: { requestRender: () => undefined, rows: () => 24 },
+      styler: plainStyler,
+      initialSourceId: "working",
+      submitReview: () => undefined,
+      onClose: () => undefined,
+    });
+    const queueComment = async (
+      source: Extract<SourceListItem, { kind: "commit" }>,
+      body: string,
+    ): Promise<void> => {
+      subject.dispatch({ type: "select-source", sourceId: source.id });
+      await vi.waitFor(() =>
+        expect(subject.getState().selectedFileId).toBe("commit:src/shared.ts")
+      );
+      subject.dispatch({ type: "focus-diff" });
+      subject.dispatch({ type: "compose-comment" });
+      for (const data of body) {
+        subject.dispatch({ type: "composing-key", data });
+      }
+      subject.dispatch({ type: "composing-key", data: "\r" });
+    };
+
+    await queueComment(commitSources[0]!, "first");
+    await queueComment(commitSources[1]!, "second");
+    expect(new Set(subject.getState().comments.map((comment) => comment.id)).size)
+      .toBe(2);
+
+    subject.dispatch({ type: "refresh" });
+    const refreshStartedVersion = subject.getState().version;
+    await vi.waitFor(() =>
+      expect(subject.getState().version).toBeGreaterThan(refreshStartedVersion)
+    );
+
+    expect(subject.getState().comments.map((comment) => comment.body)).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(subject.getState().notice).toBeUndefined();
   });
 
   it("list scroll offsets keep the selection visible", () => {

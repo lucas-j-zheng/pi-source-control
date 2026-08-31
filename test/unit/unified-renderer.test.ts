@@ -12,6 +12,7 @@ import {
 import { parseUnifiedDiff } from "../../src/diff/unified-parser.ts";
 import type { ChangedFile, DiffReview } from "../../src/model/diff.ts";
 import type { ReviewComment } from "../../src/model/review-comment.ts";
+import { fileKey } from "../../src/model/review-state.ts";
 import { SourceControlView } from "../../src/ui/source-control-view.ts";
 import { plainStyler, type Styler } from "../../src/ui/theme.ts";
 import { createBuffer } from "../../src/ui/line-editor.ts";
@@ -288,7 +289,9 @@ describe("unified renderer", () => {
     subject.dispatch({ type: "add-comment", comment: queued });
     subject.dispatch({ type: "focus-diff" });
     subject.dispatch({ type: "move", delta: 1 });
-    expect(subject.getState().cursorByFile.get(file.id)).toEqual({
+    expect(
+      subject.getState().cursorByFile.get(fileKey("working tree", file.id)),
+    ).toEqual({
       hunkIndex: 0,
       lineIndex: 1,
     });
@@ -305,11 +308,17 @@ describe("unified renderer", () => {
     subject.dispatch({ type: "focus-diff" });
     subject.dispatch({ type: "move", delta: 4 });
 
-    expect(subject.getState().cursorByFile.get(file.id)).toEqual({
+    expect(
+      subject.getState().cursorByFile.get(fileKey("working tree", file.id)),
+    ).toEqual({
       hunkIndex: 0,
       lineIndex: 4,
     });
-    expect(subject.getState().verticalOffsetByFile.get(file.id)).toBe(4);
+    expect(
+      subject.getState().verticalOffsetByFile.get(
+        fileKey("working tree", file.id),
+      ),
+    ).toBe(4);
   });
 
   it("no comments produces identical output to before", () => {

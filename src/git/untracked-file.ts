@@ -1,7 +1,9 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { fingerprintPatch } from "../diff/patch-fingerprint.ts";
+import {
+  fingerprintFilePatch,
+} from "../diff/patch-fingerprint.ts";
 import { sanitizeContent, sanitizeLabel } from "../diff/sanitize.ts";
 import type { ChangedFile, DiffLine } from "../model/diff.ts";
 
@@ -73,7 +75,7 @@ export function synthesizeUntrackedFile(
     isBinary: false,
     isOversized: false,
     rawPatch,
-    patchFingerprint: fingerprintPatch(rawPatch),
+    patchFingerprint: fingerprintFilePatch(rawPatch, "untracked", safePath),
     hunks:
       lines.length === 0
         ? []
@@ -159,7 +161,7 @@ function placeholder(
     isBinary: flags.isBinary ?? false,
     isOversized: flags.isOversized ?? false,
     rawPatch,
-    patchFingerprint: fingerprintPatch(rawPatch),
+    patchFingerprint: fingerprintFilePatch(rawPatch, "untracked", safePath),
     hunks: [],
   };
 }

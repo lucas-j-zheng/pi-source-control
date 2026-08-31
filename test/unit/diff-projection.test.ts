@@ -13,6 +13,7 @@ import type {
 import type { ReviewComment } from "../../src/model/review-comment.ts";
 import {
   createInitialState,
+  fileKey,
   reduce,
   type LineAnchor,
   type ReviewEnv,
@@ -180,7 +181,7 @@ describe("diff projection", () => {
     state = reduce(state, { type: "scroll-view", delta: 30 }, env).state;
     const elapsed = performance.now() - started;
 
-    expect(state.verticalOffsetByFile.get(file.id)).toBe(30);
+    expect(state.verticalOffsetByFile.get(fileKey("", file.id))).toBe(30);
     expect(builds).toBeLessThan(5);
     expect(elapsed).toBeLessThan(250);
   });

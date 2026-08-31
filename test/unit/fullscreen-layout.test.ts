@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { parseUnifiedDiff } from "../../src/diff/unified-parser.ts";
 import type { ChangedFile, DiffReview } from "../../src/model/diff.ts";
+import { fileKey } from "../../src/model/review-state.ts";
 import { buildUnifiedRows } from "../../src/ui/unified-renderer.ts";
 import { computeLayout } from "../../src/ui/layout.ts";
 import { SourceControlView } from "../../src/ui/source-control-view.ts";
@@ -179,7 +180,11 @@ describe("fullscreen layout", () => {
 
     diff.scrollBy(7);
 
-    expect(view.getState().verticalOffsetByFile.get(files[0]!.id)).toBe(7);
+    expect(
+      view.getState().verticalOffsetByFile.get(
+        fileKey("working tree", files[0]!.id),
+      ),
+    ).toBe(7);
   });
 
   it("keyboard scroll sets the desired scroll top which updateLayout applies", () => {
@@ -190,7 +195,7 @@ describe("fullscreen layout", () => {
     view.dispatch({ type: "focus-diff" });
     view.dispatch({ type: "page", delta: 1 });
     const offset = view.getState().verticalOffsetByFile.get(
-      view.getState().selectedFileId!,
+      fileKey("working tree", view.getState().selectedFileId!),
     );
 
     diff.updateLayout(200, 20, () => undefined);

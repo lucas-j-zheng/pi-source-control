@@ -13,6 +13,12 @@ import {
 
 export type FocusedPane = "sources" | "files" | "diff";
 
+export type FileKey = string;
+
+export function fileKey(scopeLabel: string, fileId: string): FileKey {
+  return `${scopeLabel}\0${fileId}`;
+}
+
 export interface LineAnchor {
   hunkIndex: number;
   lineIndex: number;
@@ -46,15 +52,16 @@ export interface ReviewSessionState {
   viewMode: "unified" | "side-by-side";
   maximizedDiff: boolean;
   reviewedFingerprints: Set<string>;
-  verticalOffsetByFile: Map<string, number>;
-  horizontalOffsetByFile: Map<string, number>;
-  selectedHunkByFile: Map<string, number>;
-  cursorByFile: Map<string, LineAnchor>;
+  verticalOffsetByFile: Map<FileKey, number>;
+  horizontalOffsetByFile: Map<FileKey, number>;
+  selectedHunkByFile: Map<FileKey, number>;
+  cursorByFile: Map<FileKey, LineAnchor>;
   comments: ReviewComment[];
   composing?: ComposingComment;
   pendingSourceId?: string;
   helpVisible: boolean;
   notice?: string;
+  discardCommentsArmed: boolean;
   version: number;
 }
 
@@ -69,7 +76,7 @@ export type UiAction =
   | { type: "focus-prev" }
   | { type: "enter" }
   | { type: "back" }
-  | { type: "close" }
+  | { type: "close"; discardComments?: boolean }
   | { type: "next-hunk" }
   | { type: "prev-hunk" }
   | { type: "scroll-horizontal"; delta: number }
@@ -119,7 +126,7 @@ export interface ReviewEnv {
     anchor: LineAnchor,
     mode: "unified" | "side-by-side",
   ): number;
-  scopeLabel?(): string;
+  scopeLabel?(sourceId?: string): string;
   composerRows?(input: {
     file: ChangedFile;
     composing: ComposingComment;
@@ -172,6 +179,35 @@ function clearNotice(state: ReviewSessionState): ReviewSessionState {
   return state.notice === undefined ? state : { ...state, notice: undefined };
 }
 
+function guardedClose(
+  state: ReviewSessionState,
+  discardComments = false,
+): { state: ReviewSessionState; effects: ReviewEffect[] } {
+  if (
+    state.comments.length === 0 ||
+    discardComments ||
+    state.discardCommentsArmed
+  ) {
+    return {
+      state: state.comments.length === 0 && !state.discardCommentsArmed
+        ? state
+        : { ...state, comments: [], discardCommentsArmed: false },
+      effects: [{ type: "close" }],
+    };
+  }
+
+  const count = state.comments.length;
+  return {
+    state: {
+      ...state,
+      notice:
+        `${count} ${count === 1 ? "comment" : "comments"} not submitted — S to send, q again to discard`,
+      discardCommentsArmed: true,
+    },
+    effects: [],
+  };
+}
+
 function finish(
   original: ReviewSessionState,
   state: ReviewSessionState,
@@ -196,7 +232,8 @@ function finish(
       state.composing === original.composing &&
       state.pendingSourceId === original.pendingSourceId &&
       state.helpVisible === original.helpVisible &&
-      state.notice === original.notice)
+      state.notice === original.notice &&
+      state.discardCommentsArmed === original.discardCommentsArmed)
   ) {
     return { state: original, effects };
   }
@@ -215,12 +252,14 @@ function withMapValue<K, V>(
 }
 
 function cursorForSelectedFile(
-  cursorByFile: Map<string, LineAnchor>,
+  cursorByFile: Map<FileKey, LineAnchor>,
   file: ChangedFile,
+  scopeLabel: string,
   env: ReviewEnv,
-): Map<string, LineAnchor> {
+): Map<FileKey, LineAnchor> {
+  const key = fileKey(scopeLabel, file.id);
   const anchors = env.lineAnchors(file);
-  const current = cursorByFile.get(file.id);
+  const current = cursorByFile.get(key);
   if (anchors.some((anchor) => anchorEquals(anchor, current))) {
     return cursorByFile;
   }
@@ -229,8 +268,8 @@ function cursorForSelectedFile(
   if (firstAnchor === undefined && current === undefined) return cursorByFile;
 
   const next = new Map(cursorByFile);
-  if (firstAnchor === undefined) next.delete(file.id);
-  else next.set(file.id, firstAnchor);
+  if (firstAnchor === undefined) next.delete(key);
+  else next.set(key, firstAnchor);
   return next;
 }
 
@@ -271,7 +310,12 @@ function sourceSelection(
 
   let cursorByFile = state.cursorByFile;
   if (selectedFile !== undefined) {
-    cursorByFile = cursorForSelectedFile(cursorByFile, selectedFile, env);
+    cursorByFile = cursorForSelectedFile(
+      cursorByFile,
+      selectedFile,
+      currentScopeLabel(env, sourceId),
+      env,
+    );
   }
 
   const shouldLoad =
@@ -331,7 +375,12 @@ function fileSelection(
   let cursorByFile = state.cursorByFile;
   const file = env.fileById(fileId);
   if (file !== undefined) {
-    cursorByFile = cursorForSelectedFile(cursorByFile, file, env);
+    cursorByFile = cursorForSelectedFile(
+      cursorByFile,
+      file,
+      currentScopeLabel(env, state.selectedSourceId),
+      env,
+    );
   }
 
   if (
@@ -376,14 +425,15 @@ function setDiffViewportOffset(
   offset: number,
   env: ReviewEnv,
 ): ReviewSessionState {
-  const currentOffset = state.verticalOffsetByFile.get(file.id) ?? 0;
+  const key = selectedFileKey(state, file, env);
+  const currentOffset = state.verticalOffsetByFile.get(key) ?? 0;
   if (offset === currentOffset) return state;
 
   const verticalOffsetByFile = new Map(state.verticalOffsetByFile);
-  verticalOffsetByFile.set(file.id, offset);
+  verticalOffsetByFile.set(key, offset);
 
   let cursorByFile = state.cursorByFile;
-  const currentAnchor = cursorByFile.get(file.id);
+  const currentAnchor = cursorByFile.get(key);
   if (currentAnchor !== undefined) {
     const cursorRow = env.rowForAnchor(file, currentAnchor, state.viewMode);
     const viewportEnd = offset + env.layout.bodyHeight;
@@ -402,7 +452,7 @@ function setDiffViewportOffset(
         !anchorEquals(currentAnchor, nextAnchor)
       ) {
         cursorByFile = new Map(cursorByFile);
-        cursorByFile.set(file.id, nextAnchor);
+        cursorByFile.set(key, nextAnchor);
       }
     }
   }
@@ -416,16 +466,17 @@ function setCursorAndFollow(
   anchor: LineAnchor,
   env: ReviewEnv,
 ): ReviewSessionState {
+  const key = selectedFileKey(state, file, env);
   let cursorByFile = state.cursorByFile;
-  if (!anchorEquals(cursorByFile.get(file.id), anchor)) {
+  if (!anchorEquals(cursorByFile.get(key), anchor)) {
     cursorByFile = new Map(cursorByFile);
-    cursorByFile.set(file.id, anchor);
+    cursorByFile.set(key, anchor);
   }
 
   let verticalOffsetByFile = state.verticalOffsetByFile;
   const row = env.rowForAnchor(file, anchor, state.viewMode);
   if (row >= 0) {
-    const currentOffset = verticalOffsetByFile.get(file.id) ?? 0;
+    const currentOffset = verticalOffsetByFile.get(key) ?? 0;
     const offset = keepVisible(
       row,
       currentOffset,
@@ -434,7 +485,7 @@ function setCursorAndFollow(
     );
     if (offset !== currentOffset) {
       verticalOffsetByFile = new Map(verticalOffsetByFile);
-      verticalOffsetByFile.set(file.id, offset);
+      verticalOffsetByFile.set(key, offset);
     }
   }
 
@@ -461,14 +512,15 @@ function followComposer(
   const rows = env.composerRows?.({ file, composing, mode: state.viewMode });
   if (rows === undefined || rows.anchorRow < 0) return state;
 
-  const currentOffset = state.verticalOffsetByFile.get(file.id) ?? 0;
+  const key = selectedFileKey(state, file, env);
+  const currentOffset = state.verticalOffsetByFile.get(key) ?? 0;
   const height = env.layout.bodyHeight;
   const anchored = keepVisible(rows.anchorRow, currentOffset, rows.rowCount, height);
   const offset = keepVisible(rows.lastRow, anchored, rows.rowCount, height);
   if (offset === currentOffset) return state;
 
   const verticalOffsetByFile = new Map(state.verticalOffsetByFile);
-  verticalOffsetByFile.set(file.id, offset);
+  verticalOffsetByFile.set(key, offset);
   return { ...state, verticalOffsetByFile };
 }
 
@@ -482,7 +534,7 @@ function moveDiffCursor(
   const anchors = env.lineAnchors(file);
   if (anchors.length === 0) return state;
 
-  const currentAnchor = state.cursorByFile.get(file.id);
+  const currentAnchor = state.cursorByFile.get(selectedFileKey(state, file, env));
   const foundIndex = anchors.findIndex((anchor) =>
     anchorEquals(anchor, currentAnchor)
   );
@@ -585,7 +637,8 @@ function moveHunk(
     return state.notice === "No hunks" ? state : { ...state, notice: "No hunks" };
   }
 
-  const currentAnchor = state.cursorByFile.get(file.id) ?? anchors[0];
+  const key = selectedFileKey(state, file, env);
+  const currentAnchor = state.cursorByFile.get(key) ?? anchors[0];
   const currentHunkPosition = Math.max(
     0,
     hunkIndexes.indexOf(currentAnchor?.hunkIndex ?? -1),
@@ -601,15 +654,23 @@ function moveHunk(
 
   const moved = setCursorAndFollow(state, file, anchor, env);
   const selectedHunkByFile =
-    withMapValue(moved.selectedHunkByFile, file.id, hunkIndex) ??
+    withMapValue(moved.selectedHunkByFile, key, hunkIndex) ??
     moved.selectedHunkByFile;
   return selectedHunkByFile === moved.selectedHunkByFile
     ? moved
     : { ...moved, selectedHunkByFile };
 }
 
-function currentScopeLabel(env: ReviewEnv): string {
-  return env.scopeLabel?.() ?? "";
+function currentScopeLabel(env: ReviewEnv, sourceId?: string): string {
+  return env.scopeLabel?.(sourceId) ?? "";
+}
+
+function selectedFileKey(
+  state: ReviewSessionState,
+  file: ChangedFile,
+  env: ReviewEnv,
+): FileKey {
+  return fileKey(currentScopeLabel(env, state.selectedSourceId), file.id);
 }
 
 // A file id repeats across scopes — every commit group builds ids the same way —
@@ -689,9 +750,13 @@ export function createInitialState(
     cursorByFile:
       firstFile === undefined || firstAnchor === undefined
         ? new Map()
-        : new Map([[firstFile.id, firstAnchor]]),
+        : new Map([[
+            fileKey(currentScopeLabel(env, initialSourceId), firstFile.id),
+            firstAnchor,
+          ]]),
     comments: [],
     helpVisible: false,
+    discardCommentsArmed: false,
     version: 0,
   };
 }
@@ -718,10 +783,13 @@ export function reduce(
   }
 
   if (action.type === "set-notice") {
-    const next =
-      state.notice === action.notice
-        ? state
-        : { ...state, notice: action.notice };
+    const next = action.notice === undefined && state.notice === undefined
+      ? state
+      : {
+          ...state,
+          notice: action.notice,
+          discardCommentsArmed: false,
+        };
     return finish(state, next);
   }
 
@@ -751,7 +819,12 @@ export function reduce(
     return { state, effects: [] };
   }
 
-  const working = clearNotice(state);
+  const closeIntent = action.type === "close" ||
+    (action.type === "back" && state.focusedPane === "sources");
+  let working = clearNotice(state);
+  if (!closeIntent && working.discardCommentsArmed) {
+    working = { ...working, discardCommentsArmed: false };
+  }
   let next = working;
   let effects: ReviewEffect[] = [];
 
@@ -765,7 +838,8 @@ export function reduce(
     case "scroll-view": {
       const file = selectedFile(working, env);
       if (file !== undefined) {
-        const current = working.verticalOffsetByFile.get(file.id) ?? 0;
+        const key = selectedFileKey(working, file, env);
+        const current = working.verticalOffsetByFile.get(key) ?? 0;
         const offset = clamp(
           current + Math.trunc(action.delta),
           0,
@@ -824,12 +898,17 @@ export function reduce(
           focusedPane: working.focusedPane === "diff" ? "files" : "sources",
         };
       } else {
-        effects = [{ type: "close" }];
+        const result = guardedClose(working);
+        next = result.state;
+        effects = result.effects;
       }
       break;
-    case "close":
-      effects = [{ type: "close" }];
+    case "close": {
+      const result = guardedClose(working, action.discardComments === true);
+      next = result.state;
+      effects = result.effects;
       break;
+    }
     case "next-hunk":
       next = moveHunk(working, 1, env);
       break;
@@ -839,12 +918,13 @@ export function reduce(
     case "scroll-horizontal": {
       const file = selectedFile(working, env);
       if (file !== undefined) {
-        const current = working.horizontalOffsetByFile.get(file.id) ?? 0;
+        const key = selectedFileKey(working, file, env);
+        const current = working.horizontalOffsetByFile.get(key) ?? 0;
         const offset = Math.max(0, current + Math.trunc(action.delta) * 8);
         if (offset === current) break;
         const horizontalOffsetByFile = withMapValue(
           working.horizontalOffsetByFile,
-          file.id,
+          key,
           offset,
         );
         if (horizontalOffsetByFile !== undefined) {
@@ -868,7 +948,8 @@ export function reduce(
         const file = selectedFile(working, env);
         let verticalOffsetByFile = working.verticalOffsetByFile;
         if (file !== undefined) {
-          const current = verticalOffsetByFile.get(file.id) ?? 0;
+          const key = selectedFileKey(working, file, env);
+          const current = verticalOffsetByFile.get(key) ?? 0;
           const offset = clamp(
             current,
             0,
@@ -876,7 +957,7 @@ export function reduce(
           );
           if (offset !== current) {
             verticalOffsetByFile =
-              withMapValue(verticalOffsetByFile, file.id, offset) ??
+              withMapValue(verticalOffsetByFile, key, offset) ??
               verticalOffsetByFile;
           }
         }
@@ -900,7 +981,7 @@ export function reduce(
       const file = selectedFile(working, env);
       const anchor = file === undefined
         ? undefined
-        : working.cursorByFile.get(file.id);
+        : working.cursorByFile.get(selectedFileKey(working, file, env));
       if (file === undefined || anchor === undefined) {
         next = {
           ...working,
@@ -910,7 +991,7 @@ export function reduce(
       }
       const existing = commentAt(
         working.comments,
-        currentScopeLabel(env),
+        currentScopeLabel(env, working.selectedSourceId),
         file.id,
         anchor,
       );
@@ -991,9 +1072,9 @@ export function reduce(
       const file = selectedFile(working, env);
       const anchor = file === undefined
         ? undefined
-        : working.cursorByFile.get(file.id);
+        : working.cursorByFile.get(selectedFileKey(working, file, env));
       if (file === undefined || anchor === undefined) break;
-      const scopeLabel = currentScopeLabel(env);
+      const scopeLabel = currentScopeLabel(env, working.selectedSourceId);
       const comments = working.comments.filter(
         (comment) => !commentTargets(comment, scopeLabel, file.id, anchor),
       );
@@ -1014,7 +1095,7 @@ export function reduce(
           },
           { type: "close" },
         ];
-        next = { ...working, comments: [] };
+        next = { ...working, comments: [], discardCommentsArmed: false };
       }
       break;
     case "refresh":

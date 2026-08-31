@@ -207,6 +207,33 @@ describe("source control view", () => {
     expect(subject.render(160).join("\n")).toContain("new-file.ts");
   });
 
+  it("a commit whose load failed can be selected again and retries", async () => {
+    const review = commitReview();
+    const item = commitItem(review);
+    let attempts = 0;
+    const loadCommit = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("Commit could not be loaded");
+      return review;
+    });
+    const subject = view({
+      data: dataSource({ recentCommits: [item], loadCommit }),
+    });
+
+    subject.dispatch({ type: "select-source", sourceId: item.id });
+    await vi.waitFor(() =>
+      expect(subject.getState().notice).toBe("Commit could not be loaded")
+    );
+    expect(subject.getState().pendingSourceId).toBeUndefined();
+
+    subject.dispatch({ type: "select-source", sourceId: item.id });
+    await vi.waitFor(() =>
+      expect(subject.getState().selectedFileId).toBe("commit:src/new-file.ts")
+    );
+
+    expect(loadCommit).toHaveBeenCalledTimes(2);
+  });
+
   it("q closes and calls onClose", () => {
     const onClose = vi.fn();
     const subject = view({ onClose });
@@ -271,6 +298,14 @@ describe("source control view", () => {
     const subject = view();
 
     expect(subject.render(160)).toBe(subject.render(160));
+  });
+
+  it("the render cache does not grow without bound", () => {
+    const subject = view();
+    const oldestFrame = subject.render(100);
+    for (const width of [101, 102, 103, 104]) subject.render(width);
+
+    expect(subject.render(100)).not.toBe(oldestFrame);
   });
 
   it("narrow mode renders one pane and Enter/Esc walk the screens", () => {
@@ -546,5 +581,25 @@ describe("source control view", () => {
       "Commit could not be loaded",
     );
     expect(subject.render(160).join("\n")).not.toContain("internal detail");
+  });
+
+  it("a repeated identical error notice still repaints", () => {
+    const subject = view({
+      data: dataSource({ initialReview: workspaceReview([]) }),
+    });
+    const internals = subject as unknown as {
+      loadingSourceIds: Set<string>;
+      setNotice(notice: string): void;
+    };
+    subject.dispatch({ type: "set-notice", notice: "Commit load timed out" });
+    internals.loadingSourceIds.add("working");
+    expect(subject.render(160).join("\n")).toContain("Loading…");
+
+    internals.loadingSourceIds.delete("working");
+    internals.setNotice("Commit load timed out");
+    const repainted = subject.render(160).join("\n");
+
+    expect(repainted).toContain("Commit load timed out");
+    expect(repainted).not.toContain("Loading…");
   });
 });
