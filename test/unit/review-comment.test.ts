@@ -175,6 +175,7 @@ describe("review comments", () => {
         oldLineNumber: 9,
         newLineNumber: undefined,
         lineKind: "deletion",
+        lineText: "gone",
         contextText: "-gone",
         body: "Keep this behavior.\nIt is still required.",
       }),
@@ -183,6 +184,7 @@ describe("review comments", () => {
         fileId: "a",
         filePath: "a.ts",
         newLineNumber: 3,
+        lineText: "after",
         contextText: " before\n+after",
         body: "Handle the error.",
       }),
@@ -191,7 +193,6 @@ describe("review comments", () => {
     expect(result).toBe(
       "Review of working tree — 2 comments from /diff.\n\n" +
         "1. a.ts:3 (added)\n" +
-        "      before\n" +
         "     +after\n\n" +
         "   Handle the error.\n\n" +
         "2. z.ts:-9 (removed)\n" +

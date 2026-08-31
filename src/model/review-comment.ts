@@ -1,4 +1,9 @@
-import type { ChangedFile, DiffLine, DiffReview } from "./diff.ts";
+import type {
+  ChangedFile,
+  DiffLine,
+  DiffLineKind,
+  DiffReview,
+} from "./diff.ts";
 import { buildReviewPlan, renderPlan } from "./review-plan.ts";
 import type { LineAnchor } from "./review-state.ts";
 
@@ -18,8 +23,12 @@ export interface ReviewComment {
 }
 
 function markerFor(line: DiffLine): string {
-  if (line.kind === "addition") return "+";
-  if (line.kind === "deletion") return "-";
+  return markerForKind(line.kind);
+}
+
+function markerForKind(kind: DiffLineKind): string {
+  if (kind === "addition") return "+";
+  if (kind === "deletion") return "-";
   return " ";
 }
 
@@ -126,15 +135,15 @@ export function buildReviewMessage(comments: ReviewComment[]): string {
   const header = `Review of ${scope} — ${pluralComments(ordered.length)} from /diff.`;
   const entries = ordered.map((comment, index) => {
     const scopeSuffix = multipleScopes ? ` [${comment.scopeLabel}]` : "";
-    const context = comment.contextText
-      .split("\n")
-      .map((line) => `     ${line}`)
-      .join("\n");
+    // The agent has the file; the anchored line is enough to locate the comment
+    // without spending context on surrounding lines it can read itself.
+    const anchoredLine =
+      `     ${markerForKind(comment.lineKind)}${comment.lineText}`;
     const body = comment.body
       .split("\n")
       .map((line) => `   ${line}`)
       .join("\n");
-    return `${index + 1}. ${comment.filePath}:${locationLine(comment)} (${disposition(comment)})${scopeSuffix}\n${context}\n\n${body}`;
+    return `${index + 1}. ${comment.filePath}:${locationLine(comment)} (${disposition(comment)})${scopeSuffix}\n${anchoredLine}\n\n${body}`;
   });
 
   const message = `${header}\n\n${entries.join("\n\n")}`;

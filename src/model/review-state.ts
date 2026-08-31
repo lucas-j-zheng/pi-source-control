@@ -136,7 +136,7 @@ export type ReviewEffect =
   | { type: "close" }
   | { type: "refresh" }
   | { type: "load-source"; sourceId: string }
-  | { type: "submit-review"; message: string };
+  | { type: "submit-review"; message: string; commentCount: number };
 
 export interface ReduceResult {
   state: ReviewSessionState;
@@ -999,7 +999,11 @@ export function reduce(
         next = { ...working, notice: "No comments to submit." };
       } else {
         effects = [
-          { type: "submit-review", message: buildReviewMessage(working.comments) },
+          {
+            type: "submit-review",
+            message: buildReviewMessage(working.comments),
+            commentCount: working.comments.length,
+          },
           { type: "close" },
         ];
         next = { ...working, comments: [] };

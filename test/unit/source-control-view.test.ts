@@ -151,7 +151,7 @@ function view(options: {
   host?: FakeHost;
   data?: ViewDataSource;
   styler?: Styler;
-  submitReview?: (message: string) => void;
+  submitReview?: (message: string, commentCount: number) => void;
   onClose?: () => void;
 } = {}): SourceControlView {
   return new SourceControlView({
@@ -504,6 +504,25 @@ describe("source control view", () => {
     expect(subject.getState().composing).toBeUndefined();
     expect(subject.getState().comments).toEqual([]);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("submitting hands the command layer the message and the comment count", () => {
+    const submitReview = vi.fn<(message: string, commentCount: number) => void>();
+    const onClose = vi.fn();
+    const subject = view({ submitReview, onClose });
+    subject.render(160);
+    subject.dispatch({ type: "focus-diff" });
+    subject.handleInput("c");
+    subject.handleInput("Rename this.");
+    subject.handleInput("\r");
+    subject.dispatch({ type: "submit-comments" });
+
+    expect(submitReview).toHaveBeenCalledOnce();
+    const [message, commentCount] = submitReview.mock.calls[0] ?? [];
+    expect(message).toContain("Rename this.");
+    expect(commentCount).toBe(1);
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(subject.getState().comments).toEqual([]);
   });
 
   it("a data-source error surfaces as a footer notice", async () => {

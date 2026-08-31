@@ -80,7 +80,12 @@ export interface SourceControlViewOptions {
   host: ViewHost;
   styler: Styler;
   initialSourceId: string;
-  submitReview(message: string): void;
+  /**
+   * Hand the composed review to the command layer. `commentCount` is passed so
+   * the delivery path can confirm what was submitted without re-parsing the
+   * message. Callers written against the older one-argument shape keep working.
+   */
+  submitReview(message: string, commentCount: number): void;
   onClose(): void;
 }
 
@@ -1089,7 +1094,7 @@ export class SourceControlView extends VStack {
       return;
     }
     if (effect.type === "submit-review") {
-      this.submitReview(effect.message);
+      this.submitReview(effect.message, effect.commentCount);
       return;
     }
     const source = this.sourceById(effect.sourceId);

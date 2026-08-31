@@ -972,8 +972,35 @@ describe("review state", () => {
     expect(result.effects[0]).toMatchObject({
       type: "submit-review",
       message: expect.stringContaining("Please fix this."),
+      commentCount: 1,
     });
     expect(result.state.comments).toEqual([]);
+  });
+
+  it("submit-review carries the number of comments being submitted", () => {
+    const env = fakeEnv();
+    let state = createInitialState("working", env);
+    state = apply(state, { type: "add-comment", comment: reviewComment() }, env);
+    state = apply(
+      state,
+      {
+        type: "add-comment",
+        comment: reviewComment({
+          id: "working:file-1:0:0",
+          fileId: "working:file-1",
+          filePath: "working/file-1.ts",
+          body: "And this.",
+        }),
+      },
+      env,
+    );
+
+    const result = reduce(state, { type: "submit-comments" }, env);
+
+    expect(result.effects[0]).toMatchObject({
+      type: "submit-review",
+      commentCount: 2,
+    });
   });
 
   it("submit-comments with no comments sets a notice and does not close", () => {

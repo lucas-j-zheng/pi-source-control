@@ -23,6 +23,10 @@ import {
 } from "../ui/source-control-view.ts";
 import type { Styler } from "../ui/theme.ts";
 import {
+  deliverReview,
+  type ReviewDeliverySink,
+} from "./review-delivery.ts";
+import {
   parseReviewRequest,
   ReviewRequestError,
 } from "./review-request-parser.ts";
@@ -141,6 +145,12 @@ export interface DiffCommandDeps {
   mode: string;
   notify(msg: string, level: "info" | "warning" | "error"): void;
   setEditorText(text: string): void;
+  /**
+   * Submit the review as a user turn so Pi starts on it without a further
+   * keypress. Undefined when the host build cannot send; delivery then falls
+   * back to setEditorText.
+   */
+  sendUserMessage?: ReviewDeliverySink;
   openView(
     factory: (
       host: { requestRender(): void; rows(): number },
@@ -169,6 +179,7 @@ export async function runDiffCommand(
     // Pi snapshots the prompt text when the custom view opens and restores it on
     // close, so the review message has to be set after the view has gone.
     let reviewMessage: string | undefined;
+    let reviewCommentCount = 0;
     await deps.openView(
       (host, styler, done) =>
         new SourceControlView({
@@ -176,13 +187,16 @@ export async function runDiffCommand(
           host,
           styler,
           initialSourceId: loaded.initialSourceId,
-          submitReview: (message) => {
+          submitReview: (message, commentCount) => {
             reviewMessage = message;
+            reviewCommentCount = commentCount;
           },
           onClose: done,
         }),
     );
-    if (reviewMessage !== undefined) deps.setEditorText(reviewMessage);
+    if (reviewMessage !== undefined) {
+      deliverReview(reviewMessage, reviewCommentCount, deps);
+    }
   } catch (error) {
     deps.notify(userMessageForError(error), "error");
   }

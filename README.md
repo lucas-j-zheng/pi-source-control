@@ -61,7 +61,7 @@ Bare `/diff` starts on the Working Tree source. Direct commit and range forms ar
 | `Space` | Mark/unmark the selected file as reviewed |
 | `c` | Comment on the cursor line, or edit the comment already there, in an inline editor |
 | `d` | Delete the comment on the cursor line |
-| `Shift+S` | Send every queued comment to the Pi prompt and close |
+| `Shift+S` | Send every queued comment to Pi as one message and close |
 | `g` | Refresh Git status, recent commits, and diffs |
 | `?` | Toggle a help overlay or expanded keybinding footer |
 
@@ -93,7 +93,10 @@ While the editor is open every keystroke goes into it, so ordinary bindings such
 
 Saved comments render as `💬` rows under the line they are anchored to. `c` on a
 commented line reopens that comment for editing, and `d` deletes it. `Shift+S` hands
-the whole queue to Pi as one prompt message and closes the reviewer. Comments live in
+the whole queue to Pi as one message, closes the reviewer, and submits it as a user
+turn so Pi starts on the review without a further keypress. On a Pi build with no send
+API the message is typed into the prompt instead and a notice says to press `Enter`;
+either way the reviewer confirms how many comments were submitted. Comments live in
 memory for the session only — nothing is written to the repository.
 
 ## Supported Git states

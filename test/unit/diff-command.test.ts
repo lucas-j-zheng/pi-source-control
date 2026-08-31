@@ -122,6 +122,21 @@ function harness(
   return subject;
 }
 
+function queuedComment() {
+  return {
+    id: "working:src/a.ts:0:0",
+    fileId: "working:src/a.ts",
+    filePath: "src/a.ts",
+    anchor: { hunkIndex: 0, lineIndex: 0 },
+    lineKind: "context" as const,
+    lineText: "",
+    contextText: "",
+    scopeLabel: "working tree",
+    body: "Please rename this.",
+    createdAt: 1,
+  };
+}
+
 function openedView(subject: Harness): SourceControlView {
   if (subject.factory === undefined) throw new Error("view was not opened");
   return subject.factory(
@@ -226,21 +241,7 @@ describe("diff command", () => {
         plainStyler,
         () => order.push("closed"),
       );
-      view.dispatch({
-        type: "add-comment",
-        comment: {
-          id: "working:src/a.ts:0:0",
-          fileId: "working:src/a.ts",
-          filePath: "src/a.ts",
-          anchor: { hunkIndex: 0, lineIndex: 0 },
-          lineKind: "context",
-          lineText: "",
-          contextText: "",
-          scopeLabel: "working tree",
-          body: "Please rename this.",
-          createdAt: 1,
-        },
-      });
+      view.dispatch({ type: "add-comment", comment: queuedComment() });
       view.dispatch({ type: "submit-comments" });
       expect(setEditorText).not.toHaveBeenCalled();
     });
@@ -252,6 +253,70 @@ describe("diff command", () => {
 
     expect(order).toEqual(["closed", "setEditorText"]);
     expect(setEditorText.mock.calls[0]?.[0]).toContain("Please rename this.");
+  });
+
+  it("shift+S sends the review as a user turn and confirms it", async () => {
+    const subject = harness();
+    const sendUserMessage = vi.fn<(text: string) => void>();
+    const setEditorText = vi.fn<DiffCommandDeps["setEditorText"]>();
+    const notify = vi.fn<DiffCommandDeps["notify"]>();
+    const order: string[] = [];
+    sendUserMessage.mockImplementation(() => order.push("sendUserMessage"));
+
+    const openView = vi.fn<DiffCommandDeps["openView"]>(async (factory) => {
+      const view = factory(
+        { requestRender: () => undefined, rows: () => 24 },
+        plainStyler,
+        () => order.push("closed"),
+      );
+      view.dispatch({ type: "add-comment", comment: queuedComment() });
+      view.dispatch({ type: "submit-comments" });
+      // Sending from inside the view would race Pi's close-time editor restore
+      // and start a turn while the reviewer still owns the screen.
+      expect(sendUserMessage).not.toHaveBeenCalled();
+    });
+
+    await runDiffCommand(
+      "",
+      subject.deps({ openView, setEditorText, notify, sendUserMessage }),
+    );
+
+    expect(order).toEqual(["closed", "sendUserMessage"]);
+    expect(sendUserMessage.mock.calls[0]?.[0]).toContain("Please rename this.");
+    expect(setEditorText).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith("Review sent — 1 comment", "info");
+  });
+
+  it("without a send API the review still lands in the prompt with a notice", async () => {
+    const subject = harness();
+    const setEditorText = vi.fn<DiffCommandDeps["setEditorText"]>();
+    const notify = vi.fn<DiffCommandDeps["notify"]>();
+
+    const openView = vi.fn<DiffCommandDeps["openView"]>(async (factory) => {
+      const view = factory(
+        { requestRender: () => undefined, rows: () => 24 },
+        plainStyler,
+        () => undefined,
+      );
+      view.dispatch({ type: "add-comment", comment: queuedComment() });
+      view.dispatch({ type: "submit-comments" });
+    });
+
+    await runDiffCommand(
+      "",
+      subject.deps({
+        openView,
+        setEditorText,
+        notify,
+        sendUserMessage: undefined,
+      }),
+    );
+
+    expect(setEditorText.mock.calls[0]?.[0]).toContain("Please rename this.");
+    expect(notify).toHaveBeenCalledWith(
+      "Review copied to the prompt — press Enter to send (1 comment)",
+      "info",
+    );
   });
 
   it("git errors are surfaced through notify as the user-facing message", async () => {
